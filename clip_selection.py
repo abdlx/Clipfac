@@ -79,7 +79,15 @@ def shortlist_target(video_duration):
         seconds = float(video_duration or 0)
     except (TypeError, ValueError):
         seconds = 0.0
-    return max(3, min(10, int(seconds // 90) + 2))
+    default = max(3, min(10, int(seconds // 90) + 2))
+    # Clipfac long-source analysis can inspect more than the legacy ten windows.
+    # This is a ceiling on shortlisted windows, never a quota on output clips.
+    import os
+    try:
+        requested = min(60, max(1, int(os.environ.get("CLIPFAC_CANDIDATE_LIMIT", "15"))))
+    except ValueError:
+        requested = 15
+    return max(default, requested) if requested > 15 else default
 
 
 def score_batches(windows, batch_size):

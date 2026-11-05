@@ -115,6 +115,7 @@ async def production(production_id: str, request: Request):
     record = store.get(production_id, request_owner(request))
     if not record:
         raise HTTPException(404, "Production not found")
+    record["operation"] = record["request"].get("operation", "production")
     job_id = (record["response"] or {}).get("job_id")
     if not job_id:
         return record

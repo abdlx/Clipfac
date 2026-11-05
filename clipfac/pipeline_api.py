@@ -1,9 +1,11 @@
 """Analyze -> immutable plan -> render, without downloading or paying for analysis twice."""
+import hashlib
+
 from fastapi import APIRouter, HTTPException, Request
 from clipfac import plans, store
 from clipfac.api import client
 from clipfac.auth import request_owner
-from clipfac.models import ProductionRequest, SubmitAnalysis, editorial_brief
+from clipfac.models import ProductionRequest, SubmitAnalysis, DeliveryRetry, editorial_brief
 from clipfac.presets import get_preset
 from clipfac.quality import shortlist
 from clipfac.stages import read_analysis
@@ -31,6 +33,14 @@ async def submit(request, key, operation, arguments, payload, brief):
     return store.get(record["id"], owner)
 
 
+def safe_arguments(body):
+    arguments = body.model_dump(exclude={"idempotency_key", "webhook_secret"})
+    secret = getattr(body, "webhook_secret", None)
+    if secret:
+        arguments["webhook_secret_digest"] = hashlib.sha256(secret.encode()).hexdigest()
+    return arguments
+
+
 @router.post("/analyses")
 async def analyze(body: SubmitAnalysis, request: Request):
     direction = editorial_brief(body)
@@ -41,13 +51,14 @@ async def analyze(body: SubmitAnalysis, request: Request):
         "clipfac_brief": direction, "clipfac_max_clips": body.max_clips,
         "clip_min_seconds": body.min_seconds, "clip_max_seconds": body.max_seconds,
         "force_low_quality": body.force_low_quality, "layouts": ["none"],
+        "webhook_url": body.webhook_url, "webhook_secret": body.webhook_secret,
     }
     if body.source_url:
         payload["url"] = body.source_url
     else:
         payload["upload_id"] = body.upload_id
     return await submit(request, body.idempotency_key, "analysis",
-                        body.model_dump(exclude={"idempotency_key"}), payload, direction)
+                        safe_arguments(body), payload, direction)
 
 
 def artifact(request, analysis_job_id):
@@ -145,6 +156,24 @@ async def get_plan(plan_id: str, request: Request):
 
 @router.post("/plans/revise")
 async def revise_plan(body: plans.RevisePlan, request: Request):
+    previous = plans.get(body.plan_id, request_owner(request))
+    if not previous:
+        raise HTTPException(404, "Plan not found")
+    data = artifact(request, previous["analysis_job_id"])
+    checked = {**data, "candidates": [{
+        "start": cut.start_ms / 1000, "end": cut.end_ms / 1000, "predicted_score": cut.score,
+    } for cut in body.clips]}
+    low, high = previous["duration_bounds_ms"]
+    requirements = ProductionRequest(
+        source_url="https://retained-source.invalid/video", confirm_rights=True,
+        style=body.style or previous["style"], campaign=previous["campaign"],
+        min_seconds=low / 1000, max_seconds=high / 1000,
+        max_clips=previous.get("max_clips", 15), minimum_score=0,
+    )
+    checked_selection = shortlist(checked["candidates"], requirements, candidate_texts(checked))
+    if len(checked_selection["accepted"]) != len(body.clips):
+        raise HTTPException(422, {"message": "Revision violates duration, overlap or campaign constraints",
+                                  "selection": checked_selection})
     try:
         return plans.revise(request_owner(request), body)
     except KeyError:
@@ -173,8 +202,29 @@ async def render_plan(body: plans.RenderPlan, request: Request):
         "auto_hook": preset["hook"], "auto_hook_style": preset["hook_style"],
         "captions": document["captions"],
         "layouts": [document["layout"]] if document["layout"] != "none" else preset["layouts"],
-        "output_format": "vertical",
+        "output_format": "vertical", "webhook_url": body.webhook_url, "webhook_secret": body.webhook_secret,
     }
     return await submit(request, body.idempotency_key, "render_plan",
-                        body.model_dump(exclude={"idempotency_key"}), payload,
+                        safe_arguments(body), payload,
                         {"plan_id": document["id"], "revision": document["revision"], "digest": document["digest"]})
+
+
+
+@router.get("/webhooks/{job_id}")
+async def webhook_deliveries(job_id: str):
+    from clipfac.models import AnalysisRef
+    from clipfac import outbox
+    from pydantic import ValidationError
+    try:
+        AnalysisRef(analysis_job_id=job_id)
+    except ValidationError:
+        raise HTTPException(422, "Invalid job id")
+    return {"deliveries": outbox.deliveries(job_id)}
+
+
+@router.post("/webhooks/retry")
+async def retry_webhook(body: DeliveryRetry):
+    from clipfac import outbox
+    if not outbox.retry(body.delivery_id):
+        raise HTTPException(409, "Delivery is unavailable or not in dead-letter state")
+    return {"delivery_id": body.delivery_id, "state": "pending"}

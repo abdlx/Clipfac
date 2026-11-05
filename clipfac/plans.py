@@ -50,6 +50,8 @@ class PlanRef(StrictModel):
 
 
 class RenderPlan(PlanRef):
+    webhook_url: str | None = Field(default=None, max_length=4096)
+    webhook_secret: str | None = Field(default=None, max_length=512)
     expected_revision: int = Field(ge=1)
     idempotency_key: str = Field(min_length=8, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
     quality: Literal["final"] = "final"

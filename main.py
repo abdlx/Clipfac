@@ -2182,9 +2182,20 @@ def get_viral_clips(transcript_result, video_duration, viewer_clips=None):
                     windows_json=json.dumps(_payload(ws), ensure_ascii=False))
             return build
 
-        shorts = _run_stage_split(client, model_name, shortlist,
-                                  _detail_prompt_for(min_clips, max_clips),
-                                  gemini_worker.DetailResponse, "shorts", costs, "detail")
+        if os.environ.get("CLIPFAC_CANDIDATE_LIMIT") and max_clips > 15:
+            # Keep long-source detail calls within predictable context/output
+            # sizes. Every shortlisted batch is visited; globally rank/dedupe below.
+            shorts = []
+            for offset in range(0, len(shortlist), 8):
+                batch = shortlist[offset:offset + 8]
+                upper = max(1, min(15, (max_clips * len(batch) + len(shortlist) - 1) // len(shortlist)))
+                shorts.extend(_run_stage_split(
+                    client, model_name, batch, _detail_prompt_for(0, upper),
+                    gemini_worker.DetailResponse, "shorts", costs, "detail-batch"))
+        else:
+            shorts = _run_stage_split(client, model_name, shortlist,
+                                      _detail_prompt_for(min_clips, max_clips),
+                                      gemini_worker.DetailResponse, "shorts", costs, "detail")
 
         # The floor lived only in the prompt, and a prompt is not a contract:
         # the model regularly returned half of it and the job shipped that.
@@ -2763,7 +2774,8 @@ if __name__ == '__main__':
         else:
             clips_data = get_visual_clips(input_video, duration, viewer_clips=viewer_clips)
 
-        if not clips_data or 'shorts' not in clips_data:
+        if not clips_data or 'shorts' not in clips_data or (
+                not clips_data['shorts'] and os.environ.get('CLIPFAC_ANALYSIS_ONLY') != '1'):
             # Deliberately fail instead of reframing the whole video: that path
             # wrote no metadata.json, so app.py marked the job failed anyway
             # (app.py:1087) after burning GPU on a render nobody could see.

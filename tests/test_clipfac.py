@@ -22,7 +22,7 @@ def request(**changes):
 @pytest.mark.parametrize("changes", [
     {"upload_id": "abc"}, {"source_url": "file:///tmp/a"}, {"confirm_rights": False},
     {"min_seconds": float("nan")}, {"min_seconds": 40, "max_seconds": 42},
-    {"max_clips": 16}, {"unexpected": True},
+    {"max_clips": 61}, {"unexpected": True},
 ])
 def test_strict_contract(changes):
     body = {"source_url": "https://example.com/v", "confirm_rights": True, **changes}

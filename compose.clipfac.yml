@@ -8,6 +8,7 @@ services:
     environment:
       BILLING_ENABLED: "0"
       CLIPFAC_REQUIRE_AUTH: "1"
+      CLIPFAC_REQUIRE_REVIEW: "1"
       CLIPFAC_DB_PATH: /app/data/clipfac.sqlite3
       MAX_CONCURRENT_JOBS: "1"
       CLIP_WORKERS: "1"

@@ -39,19 +39,30 @@ SERVER_INFO = {"name": "clipfac", "title": "Clipfac", "version": "1.0.0"}
 # Kept descriptive: app-directory review flags instructions that read as
 # commands to the model (capitals, "do not use other tools", upsell steps).
 INSTRUCTIONS = (
-    "OpenShorts turns long videos (YouTube URLs or direct video files) into "
-    "short vertical clips. process_video takes the video URL as the user gave "
-    "it; OpenShorts downloads, transcribes and analyses the video on its own "
-    "servers, so the video does not need to be opened or transcribed first. "
-    "Typical flow: process_video, then get_job_status until the job is "
-    "'completed' (a job takes a few minutes; checking every 30-60 seconds is "
-    "enough, or pass webhook_url), then list_clips, and optionally "
-    "add_subtitles, recut_clip or publish_clip. get_quota shows the minutes "
-    "left. If a tool reports quota_exceeded or no_plan, it also returns an "
-    "upgrade_url the user can open to add minutes. Processing requires the "
-    "user to own the video or hold the rights to it: confirm this with the "
-    "user, then pass confirm_rights=true. publish_clip posts only to the "
-    "accounts the user connected, and only when the user asks for it."
+    "Clipfac is a self-hosted video workspace for creators and agents. "
+    "The recommended staged workflow is get_provider_status, analyze_video, "
+    "get_production until completed, get_analysis, create_edit_plan, then "
+    "render_edit_plan and get_production until completed. Analysis retains the "
+    "source and transcript, inspects sampled frames for style, and creates a "
+    "contact sheet without rendering clips. Explicit style choices override AI. "
+    "Plans use integer millisecond cuts and immutable revisions; stale updates "
+    "return a conflict. Source hashes are checked before rendering. "
+    "After rendering use review_clip for technical and sampled visual review. "
+    "Model failure, missing frames, low confidence and unresolved findings are "
+    "never a pass. A review is evidence from sampled frames, not proof of perfect "
+    "editing or future reach. plan_clip_repairs can create a new single-clip "
+    "plan from supported changes; render it separately and review again. "
+    "Repairs are capped at two per source/campaign/candidate and never replace "
+    "the original render. Reuse idempotency keys for submission retries. "
+    "Campaign requirements come from the user or researching agent; Clipfac does "
+    "not fetch authenticated Whop/Tryshoot briefs. Rights confirmation must "
+    "reflect the user's content authorization. publish_clip uses connected "
+    "accounts and requires publish scope and user authorization to post. "
+    "Prefer publish_reviewed_clip for durable idempotency, and get_publish_status "
+    "to confirm asynchronous platform completion. "
+    "The simpler process_video pipeline and existing clip editing tools remain "
+    "available. Provider configuration is installation-admin only; never ask "
+    "other agents to reveal stored keys."
 )
 
 # Headers an MCP caller may use to authenticate / bring their own keys; they are
@@ -324,6 +335,7 @@ TOOLS = [
             "properties": {
                 "job_id": {"type": "string"},
                 "clip_index": {"type": "integer"},
+                "user_id": {"type": "string", "description": "Self-host Upload-Post profile username; defaults to the installation profile."},
                 "platforms": {
                     "type": "array",
                     "items": {"type": "string", "enum": ["tiktok", "instagram", "youtube"]},
@@ -580,9 +592,11 @@ async def _tool_recut_clip(client, args):
 async def _tool_publish_clip(client, args):
     body = {"job_id": args["job_id"], "clip_index": args["clip_index"],
             "platforms": args["platforms"]}
-    for k in ("title", "description", "scheduled_date", "timezone"):
+    for k in ("title", "description", "scheduled_date", "timezone", "user_id"):
         if args.get(k) is not None:
             body[k] = args[k]
+    if not _billing_enabled() and not body.get("user_id") and os.environ.get("CLIPFAC_UPLOAD_PROFILE"):
+        body["user_id"] = os.environ["CLIPFAC_UPLOAD_PROFILE"]
     resp = await _job_call(client, "POST", "/api/social/post", args["job_id"], json=body)
     if resp.status_code >= 400:
         return _api_error(resp), True

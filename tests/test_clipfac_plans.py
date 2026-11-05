@@ -227,3 +227,14 @@ def test_analysis_completion_does_not_require_rendered_clips(ledger, monkeypatch
         assert job["result"]["clips"] == []
     finally:
         app_module.jobs.pop("analysis-done", None)
+
+
+
+def test_long_source_coverage_scales_without_changing_legacy_defaults(monkeypatch):
+    from clip_selection import shortlist_target
+    monkeypatch.delenv("CLIPFAC_CANDIDATE_LIMIT", raising=False)
+    assert shortlist_target(7200) == 10
+    monkeypatch.setenv("CLIPFAC_CANDIDATE_LIMIT", "60")
+    assert shortlist_target(7200) == 60
+    monkeypatch.setenv("CLIPFAC_CANDIDATE_LIMIT", "100000")
+    assert shortlist_target(7200) == 60

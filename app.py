@@ -80,7 +80,7 @@ QUALITY_PROBE_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 # Stripe key, the JWT signing secret or the database password; one exploit
 # in that stack would otherwise hand over all of them.
 CHILD_ENV_DENYLIST = frozenset({
-    "CLIPFAC_ADMIN_TOKEN", "CLIPFAC_AGENT_TOKENS",
+    "CLIPFAC_ADMIN_TOKEN", "CLIPFAC_AGENT_TOKENS", "CLIPFAC_VAULT_KEY", "FAL_KEY",
     "DATABASE_URL", "POSTGRES_PASSWORD", "JWT_SECRET",
     "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET",
     "SMTP_USER", "SMTP_PASSWORD",
@@ -1638,7 +1638,8 @@ def _clipfac_render_env(env):
     allowed = {"CLIPFAC_STYLE", "CLIPFAC_EDITORIAL_BRIEF", "CLIP_TARGET_MIN",
                "CLIP_TARGET_MAX", "CLIP_MIN_SECONDS", "CLIP_MAX_SECONDS",
                "AUTO_HOOK", "AUTO_HOOK_STYLE", "AUTO_CAPTIONS", "AUTO_LAYOUT",
-               "CLIPFAC_ANALYSIS_ONLY", "CLIPFAC_STYLE_AUTO", "CLIPFAC_RENDER_PLAN_FILE"}
+               "CLIPFAC_ANALYSIS_ONLY", "CLIPFAC_STYLE_AUTO", "CLIPFAC_RENDER_PLAN_FILE",
+               "CLIPFAC_CANDIDATE_LIMIT"}
     # LAYOUT_ENV is defined later in this module, before the lifespan runs.
     allowed.update(LAYOUT_ENV.values())
     for values in LAYOUT_IMPLIES.values():
@@ -1728,6 +1729,13 @@ def _resume_interrupted_jobs() -> set:
             print(f"⚠️ Bad resume manifest for {job_id}: {e}")
             continue
 
+        if not BILLING_ENABLED:
+            from clipfac import outbox
+            terminal = outbox.terminal(job_id)
+            if terminal:
+                jobs[job_id] = {**terminal, "logs": _TimedLog(terminal.get("logs") or [])}
+                _clear_resume_manifest(job_id)
+                continue
         if m.get("reservation_id"):
             keep_reservations.add(str(m["reservation_id"]))
         if job_id in jobs:
@@ -2151,6 +2159,10 @@ async def run_job_wrapper(job_id):
             job_queue.task_done()
             print(f"🔁 Released slot for job {job_id} (auto-retry scheduled).")
             return
+        # Persist standalone callbacks before dropping the recovery manifest.
+        # A restart after this point recovers the terminal snapshot from SQLite.
+        if not BILLING_ENABLED and job and job.get("webhook_url"):
+            await _notify_job_webhook(job_id)
         # The subprocess returned (success or genuine failure) — a terminal
         # state, so drop the resume manifest. It only survives if the container
         # was killed mid-run, which is exactly when we want to resume.
@@ -2544,7 +2556,6 @@ async def _notify_job_webhook(job_id):
     url = job.get('webhook_url')
     if not url or job.get('webhook_sent'):
         return
-    job['webhook_sent'] = True
     completed = job.get('status') == 'completed'
     payload = {
         "event": "job.completed" if completed else "job.failed",
@@ -2554,6 +2565,16 @@ async def _notify_job_webhook(job_id):
     }
     if not completed:
         payload["error"] = _job_error_text(job.get('logs', []))[-500:]
+    if completed and (job.get("result") or {}).get("analysis"):
+        payload["analysis"] = job["result"]["analysis"]
+    if not BILLING_ENABLED:
+        from clipfac import outbox
+        snapshot = {"status": job.get("status"), "result": job.get("result"),
+                    "logs": list(job.get("logs") or [])[-10:], "user_id": None}
+        outbox.enqueue(job_id, url, job.get("webhook_secret"), payload, snapshot)
+        job["webhook_sent"] = True
+        return
+    job["webhook_sent"] = True
     body = json.dumps(payload).encode()
     asyncio.create_task(_deliver_webhook(url, body, job.get('webhook_secret')))
 
@@ -2703,7 +2724,15 @@ async def lifespan(app: FastAPI):
         # a single job-failure alert is easy to miss and ingest stays broken
         # until someone tops the balance up.
         asyncio.create_task(_alerts.proxy_watch_loop())
+    outbox_task = None
+    if not BILLING_ENABLED:
+        from clipfac.outbox import run as _run_outbox
+        outbox_task = asyncio.create_task(_run_outbox())
     yield
+    if outbox_task:
+        outbox_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await outbox_task
     # Cleanup (optional: cancel worker)
 
 app = FastAPI(lifespan=lifespan)
@@ -3653,6 +3682,8 @@ async def process_endpoint(
     source_end: Optional[str] = Form(None),
 ):
     initial_body = await request.json() if "application/json" in request.headers.get("content-type", "") else {}
+    if not isinstance(initial_body, dict):
+        raise HTTPException(400, "Request body must be a JSON object")
     planned_request = isinstance(initial_body, dict) and bool(initial_body.get("clipfac_plan_id"))
     api_key = await resolve_gemini(request)
     if not api_key and not (llm_backend.active() and not BILLING_ENABLED) and not planned_request:
@@ -3704,8 +3735,8 @@ async def process_endpoint(
             if len(clipfac_brief) > 16000:
                 raise ValueError("Editorial brief is too long")
             clipfac_max_clips = int(body.get("clipfac_max_clips", 15))
-            if not 1 <= clipfac_max_clips <= 15:
-                raise ValueError("Clip ceiling must be 1–15")
+            if not 1 <= clipfac_max_clips <= 60:
+                raise ValueError("Clip ceiling must be 1–60")
         except (ValueError, TypeError) as exc:
             raise HTTPException(400, str(exc))
 
@@ -3837,6 +3868,7 @@ async def process_endpoint(
         env["CLIPFAC_EDITORIAL_BRIEF"] = clipfac_brief
         env["CLIP_TARGET_MIN"] = "1"
         env["CLIP_TARGET_MAX"] = str(clipfac_max_clips)
+        env["CLIPFAC_CANDIDATE_LIMIT"] = str(clipfac_max_clips)
 
     # Optional layouts are per job. The renderer reads these at import time in
     # the subprocess, so they must be set before Popen — same path WATERMARK
@@ -4116,6 +4148,11 @@ def _job_view_from_disk(job_id):
     job_path = os.path.join(OUTPUT_DIR, job_id)
     if not os.path.isdir(job_path):
         return None
+    if not BILLING_ENABLED:
+        from clipfac import outbox
+        terminal = outbox.terminal(job_id)
+        if terminal:
+            return {**terminal, "logs": _TimedLog(terminal.get("logs") or [])}
     try:
         from clipfac.stages import read_analysis
         analysis = read_analysis(OUTPUT_DIR, job_id)
@@ -6418,7 +6455,10 @@ async def post_to_socials(req: SocialPostRequest, request: Request):
                 "fail. Use \"connect socials\" and try again."))
 
     try:
-        clip = job['result']['clips'][req.clip_index]
+        clip = next((item for index, item in enumerate(job["result"]["clips"])
+                     if item.get("clipfac_render_index", index) == req.clip_index), None)
+        if clip is None:
+            raise HTTPException(404, "Clip not found")
         # Video URL is relative /videos/..., we need absolute file path
         # clip['video_url'] is like "/videos/{job_id}/{filename}"
         # We constructed it as: f"/videos/{job_id}/{clip_filename}"
@@ -6429,6 +6469,10 @@ async def post_to_socials(req: SocialPostRequest, request: Request):
         
         if not os.path.exists(file_path):
              raise HTTPException(status_code=404, detail=f"Video file not found: {file_path}")
+
+        if not BILLING_ENABLED:
+            from clipfac.publishing import enforce_review
+            await enforce_review(request, req.job_id, req.clip_index, file_path)
 
         # Construct parameters for Upload-Post API
         # Fallbacks
@@ -6489,6 +6533,8 @@ async def post_to_socials(req: SocialPostRequest, request: Request):
             _post_request_owners[str(out["request_id"])] = await _owner_id(request)
         return out
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"❌ Social Post Exception: {e}")
         raise HTTPException(status_code=500, detail=str(e))

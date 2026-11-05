@@ -36,6 +36,10 @@ export function openQuotaWall(err, source) {
 export async function apiFetch(path, options = {}) {
   const headers = new Headers(options.headers || {});
   const token = getToken();
+  // Reuse a legacy browser-provided Gemini key when explicitly configured.
+  // Centralized provider settings are injected server-side and need no browser secret.
+  const geminiKey = localStorage.getItem('gemini_key');
+  if (geminiKey && !headers.has('X-Gemini-Key')) headers.set('X-Gemini-Key', geminiKey);
   if (token) headers.set('Authorization', `Bearer ${token}`);
 
   const res = await fetch(getApiUrl(path), { ...options, headers });

@@ -1,9 +1,29 @@
 """Additive tools. Keep the existing MCP transport and API authorization."""
-from clipfac.models import ClipRef, ProductionRef, ProductionRequest, SubmitProduction, SubmitAnalysis, AnalysisRef, TranscriptWindow
+from clipfac.models import ClipRef, ProductionRef, ProductionRequest, SubmitProduction, SubmitAnalysis, AnalysisRef, TranscriptWindow, DeliveryRetry, JobRef, PublishStatusRef
 from clipfac.plans import CreatePlan, RevisePlan, PlanRef, RenderPlan
+from clipfac.reviews import ReviewRequest, ReviewRef
+from clipfac.publishing import PublishRequest
 
 # name -> (scope, method, endpoint, request model, description)
 ROUTES = {
+    "get_publish_status": ("read", "GET", "/api/social/post-status/{request_id}", PublishStatusRef,
+                           "Check the asynchronous Upload-Post request returned by publish_reviewed_clip. Submitted does not mean a platform has finished publishing."),
+    "list_social_profiles": ("read", "GET", "/api/social/user", None,
+                             "List profiles and connected platforms on this installation's Upload-Post account. Select an explicit user_id for publishing when more than one profile exists."),
+    "publish_reviewed_clip": ("publish", "POST", "/api/clipfac/publish", PublishRequest,
+                              "Publish a reviewed clip with persistent idempotency. Production requires passing review of current render bytes. Reuse the same key after lost responses; uncertain outcomes are never resent."),
+    "get_provider_status": ("read", "GET", "/api/clipfac/providers", None,
+                            "Read configured text, vision, Gemini and media provider status. Keys are never returned. Configured status does not certify a successful provider connection."),
+    "review_clip": ("read", "POST", "/api/clipfac/reviews", ReviewRequest,
+                    "Run technical checks and sampled-frame editorial review, storing an immutable report tied to the rendered file hash. Model failures never count as a pass. retry_failed explicitly retries a failed provider call."),
+    "get_clip_review": ("read", "GET", "/api/clipfac/reviews/{review_id}", ReviewRef,
+                        "Read a persisted visual/technical report, evidence contact sheet, limitations and proposed typed repairs."),
+    "plan_clip_repairs": ("edit", "POST", "/api/clipfac/reviews/repair", ReviewRef,
+                          "Create an immutable single-clip repair plan from a completed current review. Only bounded trims, preset changes and source-quote hooks are allowed. Campaign constraints are rechecked. Maximum two repair plans per source/campaign/candidate; render separately and review again."),
+    "get_webhook_deliveries": ("read", "GET", "/api/clipfac/webhooks/{job_id}", JobRef,
+                              "Read persisted webhook attempts, delivery IDs, pending/delivered/dead-letter states. No credentials or callback secrets are returned."),
+    "retry_webhook_delivery": ("admin", "POST", "/api/clipfac/webhooks/retry", DeliveryRetry,
+                               "Requeue a dead-letter webhook with its original stable delivery ID. Requires installation admin access."),
     "analyze_video": ("process", "POST", "/api/clipfac/analyses", SubmitAnalysis,
                       "Download/ingest once, transcribe, find candidate moments and inspect sampled frames for style/mood. Does not render clips. style=auto chooses a versioned look, with explicit fallback warnings. Returns a submission; poll get_production."),
     "get_analysis": ("read", "GET", "/api/clipfac/analyses/{analysis_job_id}", AnalysisRef,
@@ -23,7 +43,7 @@ ROUTES = {
     "build_editorial_brief": ("read", "POST", "/api/clipfac/brief", ProductionRequest,
                              "Validate source, style and campaign requirements before spending processing resources. Does not download or analyze footage."),
     "produce_clips": ("process", "POST", "/api/clipfac/productions", SubmitProduction,
-                     "Produce clips with a versioned style and campaign brief. Reuse idempotency_key for retries. Returns immediately; get_production reports progress and shortlisted/held clips. Up to 15 candidates per source."),
+                     "Produce clips with a versioned style and campaign brief. Reuse idempotency_key for retries. Returns immediately; get_production reports progress and shortlisted/held clips. Up to 60 candidates per source, with bounded long-source detail batches."),
     "get_production": ("read", "GET", "/api/clipfac/productions/{production_id}", ProductionRef,
                       "Get production progress and quality shortlist. Scores are estimates. Technical and editorial review remain separate."),
     "list_productions": ("read", "GET", "/api/clipfac/productions", None,

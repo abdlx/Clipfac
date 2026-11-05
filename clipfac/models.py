@@ -33,7 +33,7 @@ class ProductionRequest(StrictModel):
     confirm_rights: Literal[True]
     style: Style = "podcast"
     campaign: Campaign = Field(default_factory=Campaign)
-    max_clips: int = Field(default=15, ge=1, le=15)
+    max_clips: int = Field(default=15, ge=1, le=60)
     min_seconds: float = Field(default=15, ge=5, le=175)
     max_seconds: float = Field(default=60, ge=10, le=180)
     minimum_score: float = Field(default=70, ge=0, le=100)
@@ -85,6 +85,8 @@ def editorial_brief(request):
 
 
 class SubmitAnalysis(ProductionRequest):
+    webhook_url: str | None = Field(default=None, max_length=4096)
+    webhook_secret: str | None = Field(default=None, max_length=512)
     style: Literal["auto", "podcast", "gaming", "education", "fitness", "cinematic", "campaign"] = "auto"
     idempotency_key: str = Field(min_length=8, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
 
@@ -102,3 +104,18 @@ class TranscriptWindow(AnalysisRef):
         if self.end_ms <= self.start_ms or self.end_ms - self.start_ms > 300000:
             raise ValueError("Read at most five minutes of transcript per request")
         return self
+
+
+
+class DeliveryRetry(StrictModel):
+    delivery_id: str = Field(pattern=r"^[A-Za-z0-9-]{1,64}$")
+
+
+
+class JobRef(StrictModel):
+    job_id: str = Field(pattern=r"^[A-Za-z0-9-]{1,64}$")
+
+
+
+class PublishStatusRef(StrictModel):
+    request_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")

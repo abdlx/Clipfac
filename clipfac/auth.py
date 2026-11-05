@@ -67,7 +67,8 @@ def request_owner(request):
     user = principal(request)
     if not user:
         raise HTTPException(401, "Connect an installation token")
-    return user[0]
+    # Role tokens share one installation so editing, QA and publishing can hand off work.
+    return os.environ.get("CLIPFAC_WORKSPACE_ID", "local")
 
 
 def required_scope(path, method, tool=None):
@@ -79,13 +80,15 @@ def required_scope(path, method, tool=None):
         return TOOL_SCOPES.get(tool, old.get(tool, "admin"))
     if method in ("GET", "HEAD", "OPTIONS"):
         return "read"
-    if path in ("/api/clipfac/inspect", "/api/clipfac/brief"):
+    if path in ("/api/clipfac/inspect", "/api/clipfac/brief", "/api/clipfac/reviews"):
         return "read"
+    if path == "/api/clipfac/publish":
+        return "publish"
     if path.startswith(("/api/social/", "/api/thumbnail/publish", "/api/saasshorts/post")):
         return "publish"
     if path == "/api/clipfac/plans/render" or path == "/api/clipfac/analyses":
         return "process"
-    if path.startswith("/api/clipfac/plans"):
+    if path.startswith(("/api/clipfac/plans", "/api/clipfac/reviews/repair")):
         return "edit"
     if path.startswith(("/api/process", "/api/uploads", "/api/clipfac/productions",
                         "/api/saasshorts/generate", "/api/saasshorts/analyze")):
