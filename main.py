@@ -2671,9 +2671,9 @@ if __name__ == '__main__':
     # Subtitles already burned into the source: trim them off each cut clip so
     # our captions are the only text layer (burned_subtitles.py). Only when we
     # caption at all, and never on a vertical source, which is passed through.
-    source_subtitle_band = None
+    source_subtitle_band = ((_clipfac_render_contract or {}).get("source_subtitle_band")
+                            if os.environ.get("AUTO_CAPTIONS", "1").strip() != "0" else None)
     if (not args.skip_analysis
-            and os.environ.get("CLIPFAC_ANALYSIS_ONLY") != "1"
             and not _clipfac_render_contract
             and os.environ.get("AUTO_CAPTIONS", "1").strip() != "0"):
         try:
@@ -2788,7 +2788,8 @@ if __name__ == '__main__':
                 brief = json.loads(os.environ.get("CLIPFAC_EDITORIAL_BRIEF") or "{}")
                 analyze_source(input_video, transcript, duration, clips_data, output_dir,
                                brief, "auto" if os.environ.get("CLIPFAC_STYLE_AUTO") == "1"
-                               else os.environ.get("CLIPFAC_STYLE", "podcast"))
+                               else os.environ.get("CLIPFAC_STYLE", "podcast"),
+                               source_subtitle_band=source_subtitle_band)
                 print("CLIPFAC_ANALYSIS_READY", flush=True)
                 sys.exit(0)
 

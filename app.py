@@ -3954,6 +3954,7 @@ async def process_endpoint(
         write_json_atomic(contract_path, {
             "plan": planned_source["document"],
             "transcript": planned_source["analysis"].get("transcript"),
+            "source_subtitle_band": planned_source["analysis"].get("source_subtitle_band"),
         }, indent=2)
         env["CLIPFAC_RENDER_PLAN_FILE"] = contract_path
         env["CLIPFAC_STYLE"] = planned_source["document"]["style"]

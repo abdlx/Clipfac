@@ -238,3 +238,19 @@ def test_long_source_coverage_scales_without_changing_legacy_defaults(monkeypatc
     assert shortlist_target(7200) == 60
     monkeypatch.setenv("CLIPFAC_CANDIDATE_LIMIT", "100000")
     assert shortlist_target(7200) == 60
+
+
+
+def test_analysis_preserves_existing_subtitle_band_for_later_render(tmp_path, monkeypatch):
+    import clipfac.stages as stages
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    monkeypatch.setattr(stages, "sample_source", lambda *args: ([], []))
+    monkeypatch.setattr(stages, "choose_direction", lambda *args, **kwargs: {
+        "style": "podcast", "layout": "none", "fallback": False})
+    band = {"top": .82, "bottom": .96}
+    data = stages.analyze_source(source, {"segments": []}, 30, {"shorts": []},
+                                  tmp_path, {}, "podcast", source_subtitle_band=band)
+    assert data["source_subtitle_band"] == band
+    stored = json.loads((tmp_path / stages.ANALYSIS_FILE).read_text())
+    assert stored["source_subtitle_band"] == band

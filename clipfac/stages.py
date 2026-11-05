@@ -61,7 +61,7 @@ def sample_source(path, duration, output_dir, count=8):
     return frames, times
 
 
-def analyze_source(path, transcript, duration, candidates, output_dir, brief, requested_style):
+def analyze_source(path, transcript, duration, candidates, output_dir, brief, requested_style, source_subtitle_band=None):
     from jsonfile import write_json_atomic
     from clipfac.presets import get_preset
     frames, times = sample_source(path, duration, output_dir)
@@ -82,6 +82,7 @@ def analyze_source(path, transcript, duration, candidates, output_dir, brief, re
         "source": {"filename": Path(path).name, "sha256": source_hash(path),
                    "size_bytes": Path(path).stat().st_size, "duration_seconds": duration},
         "profile": profile, "preset": get_preset(profile["style"]),
+        "source_subtitle_band": source_subtitle_band,
         "campaign": brief.get("campaign", {}),
         "selection": brief.get("selection", {}),
         "transcript": transcript or {"language": "none", "segments": []},

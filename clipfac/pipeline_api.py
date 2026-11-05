@@ -50,7 +50,7 @@ async def analyze(body: SubmitAnalysis, request: Request):
         "clipfac_style": body.style if body.style != "auto" else "podcast",
         "clipfac_brief": direction, "clipfac_max_clips": body.max_clips,
         "clip_min_seconds": body.min_seconds, "clip_max_seconds": body.max_seconds,
-        "force_low_quality": body.force_low_quality, "layouts": ["none"],
+        "force_low_quality": body.force_low_quality, "layouts": ["none"], "captions": body.captions,
         "webhook_url": body.webhook_url, "webhook_secret": body.webhook_secret,
     }
     if body.source_url:
