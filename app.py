@@ -1637,7 +1637,8 @@ def _clipfac_render_env(env):
     """Persist only editorial controls; never provider credentials or arbitrary env."""
     allowed = {"CLIPFAC_STYLE", "CLIPFAC_EDITORIAL_BRIEF", "CLIP_TARGET_MIN",
                "CLIP_TARGET_MAX", "CLIP_MIN_SECONDS", "CLIP_MAX_SECONDS",
-               "AUTO_HOOK", "AUTO_HOOK_STYLE", "AUTO_CAPTIONS", "AUTO_LAYOUT"}
+               "AUTO_HOOK", "AUTO_HOOK_STYLE", "AUTO_CAPTIONS", "AUTO_LAYOUT",
+               "CLIPFAC_ANALYSIS_ONLY", "CLIPFAC_STYLE_AUTO", "CLIPFAC_RENDER_PLAN_FILE"}
     # LAYOUT_ENV is defined later in this module, before the lifespan runs.
     allowed.update(LAYOUT_ENV.values())
     for values in LAYOUT_IMPLIES.values():
@@ -3204,6 +3205,16 @@ async def run_job(job_id, job_data):
 
         returncode = process.returncode
         
+        if returncode == 0 and env.get("CLIPFAC_ANALYSIS_ONLY") == "1":
+            from clipfac.stages import read_analysis
+            analysis = read_analysis(OUTPUT_DIR, job_id)
+            jobs[job_id]["status"] = "completed"
+            jobs[job_id]["result"] = {"clips": [], "analysis": {
+                "job_id": job_id, "candidate_count": len(analysis["candidates"]),
+                "profile": analysis["profile"], "warnings": analysis["warnings"],
+            }}
+            jobs[job_id]["logs"].append("Analysis ready. Review an edit plan before rendering.")
+            return
         if returncode == 0:
             jobs[job_id]['status'] = 'completed'
             jobs[job_id]['logs'].append("Process finished successfully.")
@@ -3641,8 +3652,10 @@ async def process_endpoint(
     source_start: Optional[str] = Form(None),
     source_end: Optional[str] = Form(None),
 ):
+    initial_body = await request.json() if "application/json" in request.headers.get("content-type", "") else {}
+    planned_request = isinstance(initial_body, dict) and bool(initial_body.get("clipfac_plan_id"))
     api_key = await resolve_gemini(request)
-    if not api_key and not (llm_backend.active() and not BILLING_ENABLED):
+    if not api_key and not (llm_backend.active() and not BILLING_ENABLED) and not planned_request:
         # Self-host with an OpenAI-compatible server configured needs no
         # Google key for the core pipeline: the moment picker runs there and
         # the frame-based stages degrade on their own (layout_picker returns
@@ -3719,12 +3732,36 @@ async def process_endpoint(
         if not src or not os.path.exists(src):
             raise HTTPException(status_code=404, detail="Source video for this session is no longer on disk")
 
+    planned_source = None
+    if planned_request:
+        if BILLING_ENABLED:
+            raise HTTPException(409, "Standalone edit plans require self-host mode")
+        from clipfac.auth import request_owner
+        from clipfac import plans as _plans
+        from clipfac.stages import read_analysis, source_hash
+        document = _plans.get(str(initial_body["clipfac_plan_id"]), request_owner(request))
+        if not document:
+            raise HTTPException(404, "Edit plan not found")
+        if url or file or upload_id or thumb_session:
+            raise HTTPException(400, "A plan render cannot supply a second source")
+        try:
+            analysis = read_analysis(OUTPUT_DIR, document["analysis_job_id"])
+            retained = _locate_source(document["analysis_job_id"])
+            if not retained or not os.path.isfile(retained):
+                raise ValueError("Retained source expired")
+            if await asyncio.to_thread(source_hash, retained) != document["source_sha256"]:
+                raise ValueError("Retained source fingerprint changed")
+            _plans.compile_candidates(document)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(409, str(exc))
+        planned_source = {"path": retained, "document": document, "analysis": analysis}
+
     # Agent upload (POST /api/uploads + PUT): the file is already on disk.
     upload_slot = None
     if upload_id and not url and not file and not thumb_session:
         upload_slot = _take_pending_upload(upload_id, await _owner_id(request))
 
-    if not url and not file and not thumb_session and not upload_slot:
+    if not url and not file and not thumb_session and not upload_slot and not planned_source:
         raise HTTPException(status_code=400, detail="Must provide URL, File or upload_id")
 
     # Completion callback: reject unsafe targets NOW (clear 400) — delivery
@@ -3784,6 +3821,15 @@ async def process_endpoint(
     # still dies before it renders anything -- the server starts and every job
     # fails instead. setdefault, so an explicit PYTHONIOENCODING still wins.
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.pop("CLIPFAC_ANALYSIS_ONLY", None)
+    env.pop("CLIPFAC_STYLE_AUTO", None)
+    env.pop("CLIPFAC_RENDER_PLAN_FILE", None)
+    if initial_body.get("clipfac_analysis_only"):
+        if planned_source:
+            raise HTTPException(400, "Cannot analyze and render a plan in one request")
+        env["CLIPFAC_ANALYSIS_ONLY"] = "1"
+        env["CLIPFAC_STYLE_AUTO"] = "1" if initial_body.get("clipfac_auto_style") else "0"
+        env["EARLY_AUDIO"] = "0"
     env.pop("CLIPFAC_STYLE", None)
     env.pop("CLIPFAC_EDITORIAL_BRIEF", None)
     if clipfac_style:
@@ -3865,6 +3911,21 @@ async def process_endpoint(
         # re-render path cuts new segments from it, and it ages out with the
         # rest of the job (retention window + OUTPUT_MAX_GB cap) either way.
         cmd.extend(["-u", url, "--keep-original"])
+    elif planned_source:
+        suffix = os.path.splitext(planned_source["path"])[1] or ".mp4"
+        input_path = os.path.join(job_output_dir, "clipfac-source" + suffix)
+        try:
+            os.link(planned_source["path"], input_path)
+        except OSError:
+            await asyncio.to_thread(shutil.copy2, planned_source["path"], input_path)
+        contract_path = os.path.abspath(os.path.join(job_output_dir, ".clipfac-render-plan.json"))
+        write_json_atomic(contract_path, {
+            "plan": planned_source["document"],
+            "transcript": planned_source["analysis"].get("transcript"),
+        }, indent=2)
+        env["CLIPFAC_RENDER_PLAN_FILE"] = contract_path
+        env["CLIPFAC_STYLE"] = planned_source["document"]["style"]
+        cmd.extend(["-i", input_path])
     elif thumb_session:
         # Hardlink (or copy) the session's video under the job's name so source
         # lookup, the clip editor and the preview treat it exactly like a normal
@@ -4055,6 +4116,16 @@ def _job_view_from_disk(job_id):
     job_path = os.path.join(OUTPUT_DIR, job_id)
     if not os.path.isdir(job_path):
         return None
+    try:
+        from clipfac.stages import read_analysis
+        analysis = read_analysis(OUTPUT_DIR, job_id)
+        return {"status": "completed", "logs": _TimedLog(["Recovered completed analysis."]),
+                "result": {"clips": [], "analysis": {
+                    "job_id": job_id, "candidate_count": len(analysis["candidates"]),
+                    "profile": analysis["profile"], "warnings": analysis["warnings"]}},
+                "user_id": None}
+    except (OSError, ValueError, KeyError):
+        pass
     m = _read_manifest(job_id)
     if m is None:
         if glob.glob(os.path.join(job_path, "*_metadata.json")):
@@ -4147,6 +4218,15 @@ def _locate_source(job_id: str):
                 if os.path.exists(candidate):
                     return candidate
     except Exception:
+        pass
+    # Analysis-only jobs intentionally have no rendered metadata.
+    try:
+        from clipfac.stages import read_analysis
+        source_name = os.path.basename(read_analysis(OUTPUT_DIR, job_id)["source"]["filename"])
+        candidate = os.path.join(OUTPUT_DIR, job_id, source_name)
+        if os.path.isfile(candidate):
+            return candidate
+    except (OSError, ValueError, KeyError):
         pass
     return None
 

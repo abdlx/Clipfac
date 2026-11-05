@@ -101,3 +101,51 @@ The new regression suite checks contracts, retries, ambiguous submissions,
 token isolation, REST/MCP publish scope guards, cookie CSRF, shortlist filtering,
 preset isolation and silence detection. Validate real media and GPU behavior
 separately on the deployment hardware.
+
+
+## Staged analysis and immutable plans
+
+The workspace now defaults to analysis before rendering:
+
+1. analyze_video ingests the source, transcribes, selects candidates, samples
+   eight real frames and generates a contact sheet. It saves a source SHA-256.
+2. The director combines transcript and frames to choose a style, layout and
+   mood. Explicit user styles override its recommendation. A missing/failing
+   vision provider is reported as an explicit fallback with zero confidence.
+3. create_edit_plan filters candidates and pins exact integer-millisecond
+   ranges, titles, hooks, source fingerprint, preset snapshot and descriptions.
+4. revise_edit_plan creates a new immutable revision. Stale head/revision writes
+   return 409; previous plans remain available.
+5. render_edit_plan reuses the source and transcript. It verifies source identity
+   before queueing and again in the worker, and compiles chosen cuts without
+   rerunning transcription or moment selection.
+
+Source contact sheets are storyboard previews, not rendered motion previews.
+Output framing still uses upstream scene/subject tracking; byte-identical
+encoded video across hardware/library versions is not promised. Pin the image
+and dependencies for reproducible deployment. Preset changes require creating
+a new revision before rendering an older plan.
+
+New REST endpoints:
+POST /api/clipfac/analyses
+GET /api/clipfac/analyses/{analysis_job_id}
+GET /api/clipfac/analyses/{analysis_job_id}/transcript?start_ms=0&end_ms=300000
+POST /api/clipfac/plans
+GET /api/clipfac/plans/{plan_id}
+POST /api/clipfac/plans/revise
+POST /api/clipfac/plans/render
+
+For any OpenAI-compatible vision-capable endpoint set:
+CLIPFAC_VISION_BASE_URL=https://provider.example/v1
+CLIPFAC_VISION_MODEL=your-vision-model
+CLIPFAC_VISION_API_KEY=your-key
+
+If no separate vision endpoint is configured, the director uses Gemini and
+CLIPFAC_DIRECTOR_GEMINI_MODEL (or GEMINI_MODEL). These are real capability
+settings: a text-only model is never treated as a vision model. Cost values are
+unknown unless priced; returned usage is not presented as free.
+
+The scoped tokens remain installation roles; they are not tenant accounts.
+Source/media retention still applies: expired source files prevent rendering.
+The render compiler currently supports one continuous source interval per clip.
+Use the existing recut tool for more complex concatenated edits.

@@ -68,11 +68,11 @@ class SubmitProduction(ProductionRequest):
 
 def editorial_brief(request):
     from clipfac.presets import get_preset
-    preset = get_preset(request.style)
+    preset = get_preset(request.style if request.style != "auto" else "podcast")
     return {
         "schema_version": 1,
-        "style": {"id": preset["id"], "version": preset["version"]},
-        "direction": preset["direction"],
+        "style": {"id": request.style, "version": preset["version"] if request.style != "auto" else None},
+        "direction": preset["direction"] if request.style != "auto" else "Inspect the actual footage and choose a restrained editing direction that preserves source meaning.",
         "campaign": request.campaign.model_dump(),
         "selection": {
             "max_clips": request.max_clips,
@@ -81,3 +81,24 @@ def editorial_brief(request):
             "rule": "Find distinct complete moments. A ceiling is not a quota. Never invent missing context or claims.",
         },
     }
+
+
+
+class SubmitAnalysis(ProductionRequest):
+    style: Literal["auto", "podcast", "gaming", "education", "fitness", "cinematic", "campaign"] = "auto"
+    idempotency_key: str = Field(min_length=8, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
+
+
+class AnalysisRef(StrictModel):
+    analysis_job_id: str = Field(pattern=r"^[A-Za-z0-9-]{1,64}$")
+
+
+class TranscriptWindow(AnalysisRef):
+    start_ms: int = Field(default=0, ge=0)
+    end_ms: int = Field(default=300000, gt=0)
+
+    @model_validator(mode="after")
+    def bounded(self):
+        if self.end_ms <= self.start_ms or self.end_ms - self.start_ms > 300000:
+            raise ValueError("Read at most five minutes of transcript per request")
+        return self

@@ -5,7 +5,8 @@ A self-hosted video workspace for creators and AI agents, built on OpenShorts.
 Bring source footage and a campaign brief. Choose a versioned editing style.
 Generate clips, inspect the result and publish through the existing editor or MCP.
 
-- Six rendering presets with caption, hook and layout settings.
+- Six rendering presets plus automatic direction from sampled frames and transcript.
+- Analyze first, review a source contact sheet, then render immutable edit plans.
 - Campaign-aware selection with an explicit shortlist and hold reasons.
 - Persistent, idempotent production submissions.
 - Scoped installation tokens and a same-origin dashboard.
@@ -28,9 +29,9 @@ Only a loopback frontend port is exposed; use HTTPS proxying for remote agents.
 
 ## Current boundaries
 
-This layer extends upstream clipping and recovery. Automatic multimodal style
-choice, autonomous editorial repair, separate analysis-before-render, and more
-than 15 candidates per source remain future work. Presets are implemented
+This layer extends upstream clipping and recovery with staged analysis and immutable
+plans. Autonomous editorial repair, low-resolution motion previews and more than
+15 candidates per source remain future work. Presets are implemented
 configurations, not benchmarked quality claims. Technical inspection cannot
 certify creative quality. Views are never guaranteed.
 

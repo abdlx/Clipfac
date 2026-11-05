@@ -83,6 +83,10 @@ def required_scope(path, method, tool=None):
         return "read"
     if path.startswith(("/api/social/", "/api/thumbnail/publish", "/api/saasshorts/post")):
         return "publish"
+    if path == "/api/clipfac/plans/render" or path == "/api/clipfac/analyses":
+        return "process"
+    if path.startswith("/api/clipfac/plans"):
+        return "edit"
     if path.startswith(("/api/process", "/api/uploads", "/api/clipfac/productions",
                         "/api/saasshorts/generate", "/api/saasshorts/analyze")):
         return "process"

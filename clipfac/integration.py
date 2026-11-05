@@ -1,6 +1,7 @@
 """Small installation seam; upstream processing and cloud licensing stay intact."""
 import os
 from clipfac.api import router
+from clipfac.pipeline_api import router as pipeline_router
 from clipfac.auth import InstallationAuth, credentials, router as auth_router
 
 
@@ -15,5 +16,6 @@ def install(app, namespace):
     credentials()  # Fail on malformed agent credentials at startup.
     app.state.clipfac_namespace = namespace
     app.include_router(router)
+    app.include_router(pipeline_router)
     app.include_router(auth_router)
     app.add_middleware(InstallationAuth)

@@ -37,3 +37,5 @@
 
 /* Keep upstream editor typography aligned with the workspace. */
 .font-display{font-weight:550;letter-spacing:-.025em}.btn-primary,.btn-ghost,.btn-quiet,.btn-danger{text-transform:none}
+
+.cf-analysis,.cf-plan{padding:24px;margin-top:20px}.cf-contact-sheet{width:100%;border-radius:12px;margin:14px 0 20px}.cf-analysis h3{font-size:16px;font-weight:550;margin-bottom:10px}.cf-analysis>p{font-size:12px;line-height:1.8;color:var(--color-muted)}.cf-plan-cut{border-top:1px solid var(--color-rule);padding-top:18px;margin-top:18px}.cf-plan-actions{display:flex;justify-content:flex-end;gap:12px;margin-top:24px;flex-wrap:wrap}

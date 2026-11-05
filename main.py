@@ -2499,6 +2499,12 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
     output_format = args.format
+    _clipfac_render_contract = None
+    if os.environ.get("CLIPFAC_RENDER_PLAN_FILE"):
+        with open(os.environ["CLIPFAC_RENDER_PLAN_FILE"]) as contract_file:
+            _clipfac_render_contract = json.load(contract_file)
+        from clipfac.plans import compile_candidates
+        compile_candidates(_clipfac_render_contract["plan"])
 
     script_start_time = time.time()
 
@@ -2632,7 +2638,7 @@ if __name__ == '__main__':
     # instead of one per clip, and the answer is a property of the material
     # ("this is a screencast"), which does not change between its own clips.
     # It runs before any render so the modules are switched on in time.
-    if layout_picker.ENABLED:
+    if layout_picker.ENABLED and os.environ.get("CLIPFAC_ANALYSIS_ONLY") != "1":
         try:
             _cap = cv2.VideoCapture(input_video)
             _fps = _cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -2656,6 +2662,8 @@ if __name__ == '__main__':
     # caption at all, and never on a vertical source, which is passed through.
     source_subtitle_band = None
     if (not args.skip_analysis
+            and os.environ.get("CLIPFAC_ANALYSIS_ONLY") != "1"
+            and not _clipfac_render_contract
             and os.environ.get("AUTO_CAPTIONS", "1").strip() != "0"):
         try:
             import burned_subtitles
@@ -2691,7 +2699,7 @@ if __name__ == '__main__':
         # 3. Transcribe — unless the video has no audio, in which case fall back
         # to Gemini vision (picks clips from the imagery instead of the speech).
         from transcribe_backends import NoAudioError
-        transcript = None
+        transcript = (_clipfac_render_contract or {}).get("transcript")
         # Module handover (issue #68): another module already transcribed this
         # exact source with the same backend, so reuse its output. Any problem
         # with the file falls back to transcribing normally rather than failing.
@@ -2723,7 +2731,7 @@ if __name__ == '__main__':
             if transcript is not None:
                 print(f"♻️ Reusing the transcript from the interrupted run "
                       f"({len(transcript['segments'])} segments) — skipping transcription.")
-        if transcript is None:
+        if transcript is None and not _clipfac_render_contract:
             try:
                 transcript = transcribe_video(input_video)
                 save_transcript_checkpoint(output_dir, transcript, input_video, duration)
@@ -2740,7 +2748,13 @@ if __name__ == '__main__':
 
         # 4. Gemini Analysis (transcript-driven, or vision for silent videos)
         early_clips = (early_state or {}).get("clips") if early_state else None
-        if (transcript is not None and early_clips
+        if _clipfac_render_contract:
+            from clipfac.plans import compile_candidates
+            from clipfac.stages import source_hash
+            if source_hash(input_video) != _clipfac_render_contract["plan"]["source_sha256"]:
+                raise RuntimeError("Source fingerprint changed; refusing to render a different source")
+            clips_data = compile_candidates(_clipfac_render_contract["plan"])
+        elif (transcript is not None and early_clips
                 and transcript is early_state["transcript"]):
             print("♻️ Using the clips Gemini picked while the video downloaded.")
             clips_data = early_clips
@@ -2757,6 +2771,14 @@ if __name__ == '__main__':
                 "Clip detection failed — the AI model did not return usable clips for this video.")
         else:
             print(f"🔥 Found {len(clips_data['shorts'])} clips!")
+            if os.environ.get("CLIPFAC_ANALYSIS_ONLY") == "1":
+                from clipfac.stages import analyze_source
+                brief = json.loads(os.environ.get("CLIPFAC_EDITORIAL_BRIEF") or "{}")
+                analyze_source(input_video, transcript, duration, clips_data, output_dir,
+                               brief, "auto" if os.environ.get("CLIPFAC_STYLE_AUTO") == "1"
+                               else os.environ.get("CLIPFAC_STYLE", "podcast"))
+                print("CLIPFAC_ANALYSIS_READY", flush=True)
+                sys.exit(0)
 
             # Save metadata. Silent videos have no transcript → no subtitles,
             # which is correct (there's no speech to caption).
@@ -2767,6 +2789,11 @@ if __name__ == '__main__':
             # --keep-original) or in uploads/ (upload jobs).
             clips_data['source_video'] = os.path.basename(input_video)
             clips_data['output_format'] = output_format
+            if _clipfac_render_contract:
+                clips_data["clipfac_plan"] = {
+                    key: _clipfac_render_contract["plan"][key]
+                    for key in ("id", "revision", "digest", "style")
+                }
             if source_subtitle_band:
                 clips_data['source_subtitle_band'] = source_subtitle_band
             metadata_file = os.path.join(output_dir, f"{video_title}_metadata.json")
@@ -2777,6 +2804,7 @@ if __name__ == '__main__':
             # clip. Renders are mostly ffmpeg subprocesses (parallelize well);
             # detector inference is serialized internally via DETECT_LOCK.
             def _process_one_clip(i, clip):
+                clip['clipfac_render_index'] = i
                 start = clip['start']
                 end = clip['end']
                 print(f"\n🎬 Processing Clip {i+1}: {start}s - {end}s")
@@ -2810,7 +2838,7 @@ if __name__ == '__main__':
                     # The hook was written from the transcript alone. When the
                     # render put this clip's meaning on the screen, rewrite hook
                     # and title from three of its frames BEFORE burning them.
-                    if success and hook_grounding.wanted(clip['layout_ranges'], end - start):
+                    if success and not _clipfac_render_contract and hook_grounding.wanted(clip['layout_ranges'], end - start):
                         hook_grounding.reground(clip_final_path, clip, transcript, start, end)
                     captioned = None
                     split_ranges = _layouts.split_ranges(clip['layout_ranges'])
@@ -2892,7 +2920,7 @@ if __name__ == '__main__':
 
             # Persist per-clip render results added by the workers (auto_hook)
             # so the editor can see what is already burned into each clip.
-            if any('auto_hook' in c or 'hook_grounding' in c for c in shorts):
+            if _clipfac_render_contract or any('auto_hook' in c or 'hook_grounding' in c for c in shorts):
                 # Atomic: the dashboard is already reading this file for the
                 # clips announced above (CLIP_READY).
                 write_json_atomic(metadata_file, clips_data, indent=2)

@@ -31,7 +31,7 @@ def client(request):
 
 @router.get("/presets")
 async def presets():
-    return {"presets": list_presets(), "automatic_style_selection": False}
+    return {"presets": list_presets(), "automatic_style_selection": True, "automatic_style_workflow": "analyze_video -> create_edit_plan -> render_edit_plan"}
 
 
 @router.post("/brief")
@@ -127,6 +127,26 @@ async def production(production_id: str, request: Request):
     job = response.json()
     record["state"] = job.get("status")
     record["job"] = job
+    if record["request"].get("operation"):
+        record["operation"] = record["request"]["operation"]
+        if job.get("status") == "completed" and record["operation"] == "analysis":
+            from clipfac.stages import read_analysis
+            try:
+                data = read_analysis(request.app.state.clipfac_namespace["OUTPUT_DIR"], job_id)
+                record["analysis"] = {key: value for key, value in data.items() if key != "transcript"}
+                if data.get("contact_sheet"):
+                    record["analysis"]["contact_sheet_url"] = f"/videos/{job_id}/{data['contact_sheet']}"
+            except (OSError, ValueError):
+                record["analysis_notice"] = "Retained analysis expired"
+        if job.get("status") == "completed" and record["operation"] == "render_plan":
+            rendered = (job.get("result") or {}).get("clips", [])
+            record["selection"] = {
+                "accepted": [{"index": clip.get("clipfac_render_index", index),
+                              "score": clip.get("predicted_score", 0), "clip": clip}
+                             for index, clip in enumerate(rendered)],
+                "held": [], "review_notice": "Rendered from an immutable edit plan. Technical and editorial review are still required.",
+            }
+        return record
     if job.get("status") == "completed":
         req = ProductionRequest.model_validate(record["request"])
         clips = (job.get("result") or {}).get("clips", [])
@@ -142,11 +162,13 @@ async def inspect(body: ClipRef, request: Request):
     if not response.is_success:
         raise HTTPException(response.status_code, "Job unavailable")
     clips = (response.json().get("result") or {}).get("clips") or []
-    if body.clip_index >= len(clips):
+    clip = next((item for index, item in enumerate(clips)
+                 if item.get("clipfac_render_index", index) == body.clip_index), None)
+    if clip is None:
         raise HTTPException(404, "Clip unavailable")
     namespace = request.app.state.clipfac_namespace
     root = Path(namespace["OUTPUT_DIR"]).resolve()
-    url = urlparse(clips[body.clip_index].get("video_url") or "")
+    url = urlparse(clip.get("video_url") or "")
     if url.scheme or not url.path.startswith("/videos/"):
         raise HTTPException(409, "Inspection requires a retained local render")
     path = (root / unquote(url.path[len("/videos/"):])).resolve()
