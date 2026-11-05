@@ -35,7 +35,7 @@ from subtitles import CAPTION_PRESETS, line_budget
 router = APIRouter()
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
-SERVER_INFO = {"name": "openshorts", "title": "OpenShorts", "version": "1.0.0"}
+SERVER_INFO = {"name": "clipfac", "title": "Clipfac", "version": "1.0.0"}
 # Kept descriptive: app-directory review flags instructions that read as
 # commands to the model (capitals, "do not use other tools", upsell steps).
 INSTRUCTIONS = (
@@ -56,7 +56,7 @@ INSTRUCTIONS = (
 
 # Headers an MCP caller may use to authenticate / bring their own keys; they are
 # forwarded verbatim to the internal endpoints so every existing auth path works.
-_FORWARD_HEADERS = ("authorization", "x-api-key", "x-gemini-key", "x-upload-post-key")
+_FORWARD_HEADERS = ("authorization", "x-api-key", "x-gemini-key", "x-upload-post-key", "cookie", "origin", "x-elevenlabs-key", "x-fal-key")
 
 _LOG_TAIL = 10  # status logs are for humans; agents only need the tail
 
@@ -364,7 +364,7 @@ def _client(request: Request) -> httpx.AsyncClient:
     headers = {k: v for k, v in request.headers.items() if k.lower() in _FORWARD_HEADERS}
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=request.app, raise_app_exceptions=False),
-        base_url="http://openshorts.internal",
+        base_url=str(request.base_url).rstrip("/"),
         headers=headers,
         timeout=300.0,
     )
@@ -761,3 +761,7 @@ async def mcp_endpoint(request: Request):
 async def mcp_get():
     # Stateless server: no server-initiated SSE stream to offer.
     return Response(status_code=405, headers={"Allow": "POST"})
+
+
+from clipfac.mcp import register as _register_clipfac
+_register_clipfac(__import__(__name__))

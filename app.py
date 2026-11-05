@@ -80,6 +80,7 @@ QUALITY_PROBE_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 # Stripe key, the JWT signing secret or the database password; one exploit
 # in that stack would otherwise hand over all of them.
 CHILD_ENV_DENYLIST = frozenset({
+    "CLIPFAC_ADMIN_TOKEN", "CLIPFAC_AGENT_TOKENS",
     "DATABASE_URL", "POSTGRES_PASSWORD", "JWT_SECRET",
     "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET",
     "SMTP_USER", "SMTP_PASSWORD",
@@ -3660,6 +3661,27 @@ async def process_endpoint(
         source_start = body.get("source_start")
         source_end = body.get("source_end")
 
+    # Clipfac metadata stays per-job, never in process-global environment.
+    clipfac_style = None
+    clipfac_brief = None
+    clipfac_max_clips = None
+    if "application/json" in content_type and body.get("clipfac_style"):
+        from clipfac.presets import get_preset
+        try:
+            get_preset(body["clipfac_style"])
+            clipfac_style = body["clipfac_style"]
+            raw_brief = body.get("clipfac_brief", {})
+            if not isinstance(raw_brief, dict):
+                raise ValueError("Editorial brief must be an object")
+            clipfac_brief = json.dumps(raw_brief, ensure_ascii=False)
+            if len(clipfac_brief) > 16000:
+                raise ValueError("Editorial brief is too long")
+            clipfac_max_clips = int(body.get("clipfac_max_clips", 15))
+            if not 1 <= clipfac_max_clips <= 15:
+                raise ValueError("Clip ceiling must be 1–15")
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(400, str(exc))
+
     # Normalize output format (auto = keep pipeline default).
     if output_format not in ("vertical", "horizontal", "square"):
         output_format = "auto"
@@ -3748,6 +3770,13 @@ async def process_endpoint(
     # still dies before it renders anything -- the server starts and every job
     # fails instead. setdefault, so an explicit PYTHONIOENCODING still wins.
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.pop("CLIPFAC_STYLE", None)
+    env.pop("CLIPFAC_EDITORIAL_BRIEF", None)
+    if clipfac_style:
+        env["CLIPFAC_STYLE"] = clipfac_style
+        env["CLIPFAC_EDITORIAL_BRIEF"] = clipfac_brief
+        env["CLIP_TARGET_MIN"] = "1"
+        env["CLIP_TARGET_MAX"] = str(clipfac_max_clips)
 
     # Optional layouts are per job. The renderer reads these at import time in
     # the subprocess, so they must be set before Popen — same path WATERMARK
@@ -8372,3 +8401,8 @@ async def saasshorts_voices(
         ],
         "source": "defaults",
     }
+
+
+# Clipfac is a separate MIT layer, enabled for standalone self-hosting.
+from clipfac.integration import install as _install_clipfac
+_install_clipfac(app, globals())

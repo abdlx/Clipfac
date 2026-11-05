@@ -714,3 +714,10 @@ def burn_subtitles(video_path, srt_path, output_path, alignment=2, fontsize=16,
 
     return True
 
+
+
+
+def automatic_caption_style():
+    """Resolve a per-subprocess look without changing legacy caption defaults."""
+    from clipfac.presets import render_caption_style
+    return render_caption_style(AUTO_CAPTION_STYLE, os.environ.get("CLIPFAC_STYLE"))

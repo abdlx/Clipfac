@@ -68,3 +68,10 @@ README.md
 
 # Rust build output
 osrender/target/
+
+# Clipfac runtime data
+data/
+output/
+uploads/
+*.sqlite3
+*.sqlite3-*

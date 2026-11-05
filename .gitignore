@@ -52,3 +52,8 @@ CLAUDE.local.md
 
 # Rust build output
 osrender/target/
+
+# Clipfac private runtime data
+data/
+*.sqlite3
+*.sqlite3-*
