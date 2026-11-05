@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { ArrowUpRight, Check, ChevronRight, Clapperboard, Copy, Film, KeyRound, Loader2, Moon, Plus, RefreshCw, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Workflow } from 'lucide-react'
-import { apiJson } from '../lib/api'
+import { apiJson, setToken as storeSessionToken } from '../lib/api'
 import { getApiUrl } from '../config'
 
 const initial = { source_url: '', style: 'auto', campaign_name: '', platform: 'independent', audience: '', objective: '', notes: '', required: '', forbidden: '', minimum_score: 70, min_seconds: 15, max_seconds: 60, max_clips: 15, confirm_rights: false, captions: true }
@@ -96,6 +96,13 @@ export default function ClipfacWorkspace() {
     setBusy(true); setError('')
     try {
       await apiJson('/api/clipfac/session', { method: 'POST', headers: { Authorization: 'Bearer ' + token } })
+      // The session exchange also sets an HttpOnly cookie, but that only works
+      // when the workspace and the API share one origin. On a split-origin
+      // install (frontend and API on different hosts) fetch sends no
+      // credentials cross-origin and the cookie is SameSite=Strict, so the
+      // cookie alone can never authenticate later calls. Keep the token in
+      // this browser so the workspace can call the API with it instead.
+      storeSessionToken(token)
       setToken('')
       await refresh()
     } catch (err) { setError(errorText(err)) }
@@ -202,7 +209,7 @@ export default function ClipfacWorkspace() {
     <label>Installation token<input type="password" autoComplete="off" required value={token} onChange={e => setToken(e.target.value)} placeholder="Paste your installation token" /></label>
     {error && <p className="cf-error" role="alert">{error}</p>}
     <button className="cf-primary" disabled={busy}>{busy ? <Loader2 className="cf-spin" size={16} /> : <KeyRound size={16} />} Connect workspace</button>
-    <small>The token is exchanged for an HttpOnly session and is not stored in browser storage.</small>
+    <small>The token is kept in this browser so the workspace stays connected. Clear this site's data to sign out.</small>
   </form></div>
 
   return <div className="cf-shell">
