@@ -6,6 +6,7 @@ import { getApiUrl } from '../config'
 const initial = { source_url: '', style: 'auto', campaign_name: '', platform: 'independent', audience: '', objective: '', notes: '', required: '', forbidden: '', minimum_score: 70, min_seconds: 15, max_seconds: 60, max_clips: 15, confirm_rights: false, captions: true }
 const lines = value => value.split('\n').map(x => x.trim()).filter(Boolean)
 const errorText = error => error.detail || error.message || 'Request failed'
+const requestKey = () => crypto.randomUUID?.() || Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
 
 export default function ClipfacWorkspace() {
   const [tab, setTab] = useState('productions')
@@ -18,7 +19,7 @@ export default function ClipfacWorkspace() {
   const [error, setError] = useState('')
   const [locked, setLocked] = useState(false)
   const [token, setToken] = useState('')
-  const [theme, setTheme] = useState(() => localStorage.getItem('clipfac_theme') || 'light')
+  const [theme, setTheme] = useState(() => { try { return localStorage.getItem('clipfac_theme') || 'light' } catch (_) { return 'light' } })
   const [report, setReport] = useState(null)
   const [inspecting, setInspecting] = useState(null)
   const [copied, setCopied] = useState(false)
@@ -31,7 +32,7 @@ export default function ClipfacWorkspace() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
-    localStorage.setItem('clipfac_theme', theme)
+    try { localStorage.setItem('clipfac_theme', theme) } catch (_) { /* theme still works for this session */ }
   }, [theme])
 
   const refresh = useCallback(async () => {
@@ -113,7 +114,7 @@ export default function ClipfacWorkspace() {
     event.preventDefault()
     setBusy(true); setError(''); setReport(null); setReview(null); setEditPlan(null); setPlanDirty(false)
     // Hold this exact key + body across ambiguous failures. Editing the form starts a new request.
-    const body = submission || { ...payload(), idempotency_key: crypto.randomUUID() }
+    const body = submission || { ...payload(), idempotency_key: requestKey() }
     setSubmission(body)
     try {
       const data = await apiJson('/api/clipfac/analyses', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -155,7 +156,7 @@ export default function ClipfacWorkspace() {
   async function renderPlan() {
     if (planDirty) { setError('Save the edit-plan revision before rendering.'); return }
     setBusy(true); setError('')
-    const body = renderSubmission || { plan_id: editPlan.id, expected_revision: editPlan.revision, idempotency_key: crypto.randomUUID(), quality: 'final' }
+    const body = renderSubmission || { plan_id: editPlan.id, expected_revision: editPlan.revision, idempotency_key: requestKey(), quality: 'final' }
     setRenderSubmission(body)
     try {
       const production = await apiJson('/api/clipfac/plans/render', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
@@ -223,7 +224,7 @@ export default function ClipfacWorkspace() {
       <div className="cf-content">
         {error && <div className="cf-error" role="alert">{error}<button onClick={() => setError('')} aria-label="Dismiss error">×</button></div>}
         {tab === 'productions' && <>
-          <div className="cf-heading"><div><p className="cf-kicker">FROM LONG FORM TO YOUR NEXT STORY</p><h1>A little footage.<br /><span>A lot of possibility.</span></h1><p>Give every worthwhile moment its own frame.</p></div><button className="cf-secondary" onClick={() => { setSelected(null); setReport(null) }}><Plus size={16} />New production</button></div>
+          <div className="cf-heading"><div><p className="cf-kicker">FROM LONG FORM TO YOUR NEXT STORY</p><h1>A little footage.<br /><span>A lot of possibility.</span></h1><p>Give every worthwhile moment its own frame.</p></div><button className="cf-secondary" onClick={() => { setSelected(null); setReport(null); setReview(null); setEditPlan(null); setSubmission(null); setRenderSubmission(null); setPlanDirty(false) }}><Plus size={16} />New production</button></div>
           <div className="cf-grid">
             <form className="cf-panel cf-production-form" onSubmit={produce}>
               <div className="cf-panel-heading"><span className="cf-icon"><Clapperboard size={19} /></span><div><h2>Start with the footage</h2><p>Analyze once. Refine the plan. Render when ready.</p></div></div>
@@ -249,7 +250,7 @@ export default function ClipfacWorkspace() {
               <p className="cf-footnote">Analysis produces candidates and a contact sheet. Review the exact edit plan before spending time on full renders.</p>
             </form>
             <aside className="cf-right-column">
-              <div className="cf-style-preview" style={{ '--preview-accent': preset?.accent || '#82B2FF' }}><div className="cf-preview-top"><span>YOUR DIRECTION</span><span>9:16</span></div><div className="cf-preview-frame"><div className="cf-preview-bars"><i /><i /><i /></div><div className="cf-preview-caption">Every moment<br />has <em>a story.</em></div><span className="cf-preview-stamp">TYPOGRAPHY CONCEPT · NOT A VIDEO PREVIEW</span></div><div className="cf-preview-bottom"><strong>{form.style === 'auto' ? 'Automatic direction' : preset?.name || 'Editorial'}</strong><small>Version {form.style === 'auto' ? 'Chosen after analysis' : 'Version ' + (preset?.version || 1) + ' · ' + (preset?.theme || 'podcast')}</small></div></div>
+              <div className="cf-style-preview" style={{ '--preview-accent': preset?.accent || '#82B2FF' }}><div className="cf-preview-top"><span>YOUR DIRECTION</span><span>9:16</span></div><div className="cf-preview-frame"><div className="cf-preview-bars"><i /><i /><i /></div><div className="cf-preview-caption">Every moment<br />has <em>a story.</em></div><span className="cf-preview-stamp">TYPOGRAPHY CONCEPT · NOT A VIDEO PREVIEW</span></div><div className="cf-preview-bottom"><strong>{form.style === 'auto' ? 'Automatic direction' : preset?.name || 'Editorial'}</strong><small>{form.style === 'auto' ? 'Chosen after analysis' : 'Version ' + (preset?.version || 1) + ' · ' + (preset?.theme || 'podcast')}</small></div></div>
               <div className="cf-panel cf-how"><ShieldCheck size={20} /><h3>A considered workflow.</h3><p>Inspect real frames. Pin the source and cut times. Keep every revision. Render the plan you reviewed.</p><button type="button" className="cf-text-button" onClick={() => setTab('providers')}>Connect your providers <ArrowUpRight size={13} /></button></div>
             </aside>
           </div>

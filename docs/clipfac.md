@@ -217,3 +217,25 @@ and PRs. The new suites cover strict contracts, staged source reuse, immutable
 revisions, source hashes, credentials, scoped/shared roles, reviews, repair
 budgets, publishing idempotency and webhook leases. They still need execution
 in an available runtime, followed by Docker and real-video benchmarking.
+
+
+## Real-media benchmarking
+
+CI now installs FFmpeg and includes synthetic moving-picture/audio, black-frame,
+digital-silence, missing-audio, corrupt-media and contact-sheet tests. These
+verify implemented technical signals; they do not rate professional editing.
+
+To evaluate the actual pipeline, copy benchmarks/manifest.example.json to
+benchmark-manifest.local.json and replace placeholders with authorized sources.
+Use a read/process/edit role token:
+
+CLIPFAC_AGENT_TOKEN=... python tools/clipfac_benchmark.py \
+  --manifest benchmark-manifest.local.json --max-clips 3 \
+  --output benchmark-results.json
+
+The runner handles at most 30 sources and 1–5 clips per source, checkpoints each
+case, measures elapsed time and sampled-review outcomes, and never publishes.
+It uses your configured provider resources. Human quality ratings and unknown
+cost remain null; they are not fabricated from model confidence. Rate output
+separately for hook strength, context, pacing, framing, caption legibility and
+brand fit before declaring the product production-ready.

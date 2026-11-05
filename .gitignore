@@ -57,3 +57,7 @@ osrender/target/
 data/
 *.sqlite3
 *.sqlite3-*
+
+# Private real-media benchmark inputs/results
+benchmark-manifest.local.json
+benchmark-results*.json

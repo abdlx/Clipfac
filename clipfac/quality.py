@@ -88,7 +88,10 @@ def inspect_media(path):
     if black:
         issues.append("black_intervals")
     levels = dict(re.findall(r"(mean_volume|max_volume):\s*(-?(?:[0-9.]+|inf)) dB", scan.stderr))
-    if levels.get("max_volume") == "-inf":
+    if levels.get("max_volume") == "-inf" or (
+            levels.get("max_volume") and float(levels["max_volume"]) <= -80):
+        # FFmpeg's 16-bit volume histogram often reports digital silence as
+        # -91 dB rather than -inf; both are effectively silent.
         issues.append("silent_audio")
     elif levels.get("mean_volume") and float(levels["mean_volume"]) < -40:
         issues.append("quiet_audio")
