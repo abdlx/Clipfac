@@ -1633,10 +1633,22 @@ def _install_drain_signal_handler():
         print(f"⚠️ Drain-on-SIGTERM unavailable ({e}); jobs will resume on restart instead.")
 
 
+def _clipfac_render_env(env):
+    """Persist only editorial controls; never provider credentials or arbitrary env."""
+    allowed = {"CLIPFAC_STYLE", "CLIPFAC_EDITORIAL_BRIEF", "CLIP_TARGET_MIN",
+               "CLIP_TARGET_MAX", "CLIP_MIN_SECONDS", "CLIP_MAX_SECONDS",
+               "AUTO_HOOK", "AUTO_HOOK_STYLE", "AUTO_CAPTIONS", "AUTO_LAYOUT"}
+    # LAYOUT_ENV is defined later in this module, before the lifespan runs.
+    allowed.update(LAYOUT_ENV.values())
+    for values in LAYOUT_IMPLIES.values():
+        allowed.update(values)
+    return {key: str(value) for key, value in env.items() if key in allowed}
+
+
 def _write_resume_manifest(job_id, cmd, priority, user_id, reservation_id, watermark,
                            webhook_url=None, webhook_secret=None, base_url=None,
                            partial=None, source_cap_minutes=None, skip_statics=False,
-                           via_api_key=False):
+                           via_api_key=False, render_env=None):
     try:
         path = os.path.join(OUTPUT_DIR, job_id, _RESUME_FILE)
         with open(path, "w") as f:
@@ -1661,6 +1673,7 @@ def _write_resume_manifest(job_id, cmd, priority, user_id, reservation_id, water
                 # The probe's "statics bot-checked for this video" verdict.
                 "skip_statics": bool(skip_statics),
                 "via_api_key": bool(via_api_key),
+                "render_env": _clipfac_render_env(render_env or {}),
             }, f)
     except Exception as e:
         print(f"⚠️ Could not write resume manifest for {job_id}: {e}")
@@ -1736,6 +1749,7 @@ def _resume_interrupted_jobs() -> set:
         # Rebuild env from scratch — the manifest holds no secrets. Managed
         # (cloud) jobs get the server key; self-host falls back to its env key.
         env = child_env()
+        env.update(_clipfac_render_env(m.get("render_env") or {}))
         try:
             from cloud import proxy_ledger as _pl
             if BILLING_ENABLED and _pl.budget_exceeded_sync():
@@ -3781,6 +3795,10 @@ async def process_endpoint(
     # Optional layouts are per job. The renderer reads these at import time in
     # the subprocess, so they must be set before Popen — same path WATERMARK
     # already takes.
+    if clipfac_style:
+        env["AUTO_LAYOUT"] = "0"
+        for key in set(LAYOUT_ENV.values()) | {key for values in LAYOUT_IMPLIES.values() for key in values}:
+            env[key] = "0"
     chosen = layout_env(layouts)
     env.update(chosen)
     if chosen:
@@ -3795,6 +3813,9 @@ async def process_endpoint(
         if auto_hook_style in HOOK_STYLES:
             env["AUTO_HOOK_STYLE"] = auto_hook_style
         print(f"[auto-hook] job={job_id} style={env.get('AUTO_HOOK_STYLE', 'classic')}")
+
+    if auto_hook is not None and str(auto_hook).lower() in ("0", "false", "no"):
+        env["AUTO_HOOK"] = "0"
 
     # Manual generation controls (discussion #65): optional clip-count target
     # and duration band, forwarded to the selection prompts via the same env
@@ -4015,7 +4036,8 @@ async def process_endpoint(
                            webhook_url=webhook_url, webhook_secret=webhook_secret,
                            base_url=api_base, partial=partial,
                            source_cap_minutes=source_cap, skip_statics=skip_statics,
-                           via_api_key=jobs[job_id]['via_api_key'])
+                           via_api_key=jobs[job_id]['via_api_key'],
+                           render_env=env)
 
     _enqueue_job(job_id, priority)
 

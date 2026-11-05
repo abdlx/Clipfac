@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import subprocess
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -155,5 +156,5 @@ async def inspect(body: ClipRef, request: Request):
     async with _inspection_slot:
         try:
             return await asyncio.to_thread(inspect_media, path)
-        except (ValueError, OSError, TimeoutError) as exc:
+        except (ValueError, OSError, TimeoutError, subprocess.TimeoutExpired) as exc:
             raise HTTPException(422, f"Inspection failed: {type(exc).__name__}")

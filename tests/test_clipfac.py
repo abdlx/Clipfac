@@ -181,3 +181,19 @@ def test_media_inspection_detects_silence(monkeypatch):
     report = inspect_media(Path("/render.mp4"))
     assert "silent_audio" in report["issues"]
     assert "editorial_coherence" in report["not_checked"]
+
+
+
+def test_resume_controls_exclude_all_credentials(tmp_path, monkeypatch):
+    import app as app_module
+    safe = app_module._clipfac_render_env({
+        "CLIPFAC_STYLE": "gaming", "AUTO_CAPTIONS": "0", "CLIP_TARGET_MAX": "8",
+        "CLIPFAC_ADMIN_TOKEN": "secret", "GEMINI_API_KEY": "secret", "LD_PRELOAD": "bad",
+    })
+    assert safe == {"CLIPFAC_STYLE": "gaming", "AUTO_CAPTIONS": "0", "CLIP_TARGET_MAX": "8"}
+    monkeypatch.setattr(app_module, "OUTPUT_DIR", str(tmp_path))
+    (tmp_path / "job-test").mkdir()
+    app_module._write_resume_manifest("job-test", ["python", "main.py"], 2, None, None, False,
+                                     render_env={"CLIPFAC_STYLE": "gaming", "GEMINI_API_KEY": "secret"})
+    manifest = json.loads((tmp_path / "job-test" / app_module._RESUME_FILE).read_text())
+    assert manifest["render_env"] == {"CLIPFAC_STYLE": "gaming"}

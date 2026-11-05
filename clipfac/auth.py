@@ -113,7 +113,9 @@ class InstallationAuth(BaseHTTPMiddleware):
                 try:
                     message = await request.json()
                     if isinstance(message, dict) and message.get("method") == "tools/call":
-                        scope = required_scope(path, "POST", (message.get("params") or {}).get("name") or "unknown")
+                        params = message.get("params") or {}
+                        name = params.get("name") if isinstance(params, dict) else None
+                        scope = required_scope(path, "POST", name if isinstance(name, str) else "unknown")
                 except (ValueError, TypeError):
                     pass  # MCP returns its own parse error.
         if scope not in scopes and "admin" not in scopes:
