@@ -311,7 +311,7 @@ export default function ClipfacWorkspace() {
 
 function ProviderCard({ config, onSave, onRemove }) {
   const names = {
-    gemini: ['Google Gemini', 'Native text selection and upstream vision/layout stages.'],
+    gemini: ['Google Gemini', 'Native text selection and upstream vision/layout stages. Leave the base URL blank to use Google, or point it at your own Gemini-compatible endpoint.'],
     text: ['Compatible text model', 'Any configured OpenAI-compatible chat endpoint.'],
     vision: ['Compatible vision model', 'Footage direction and sampled-frame review. Requires image input support.'],
     upload_post: ['Upload-Post', 'Connected social accounts and publishing.'],
@@ -324,11 +324,12 @@ function ProviderCard({ config, onSave, onRemove }) {
   const [token, setToken] = useState('')
   const [saving, setSaving] = useState(false)
   const compatible = config.kind === 'text' || config.kind === 'vision'
+  const hasEndpoint = compatible || config.kind === 'gemini'
   async function save(event) {
     event.preventDefault()
     setSaving(true)
     try {
-      await onSave(config.kind, { enabled, endpoint: compatible ? endpoint : null,
+      await onSave(config.kind, { enabled, endpoint: hasEndpoint ? endpoint : null,
         model: compatible || config.kind === 'gemini' ? model : null, profile: config.kind === 'upload_post' ? model : null, token: token.trim() || null })
       setToken('')
     } catch (_) { /* parent shows the server error */ }
@@ -343,7 +344,8 @@ function ProviderCard({ config, onSave, onRemove }) {
   return <form className="cf-panel cf-provider" onSubmit={save}>
     <div className="cf-section-heading"><h2>{names[config.kind]?.[0] || config.kind}</h2><span className="cf-status">{!config.enabled ? 'Disabled' : config.token_configured || compatible && config.endpoint ? 'Configured' : 'Not configured'}</span></div>
     <p>{names[config.kind]?.[1]}</p>
-    {compatible && <label>API base URL<input type="url" required={enabled} value={endpoint} onChange={e => setEndpoint(e.target.value)} placeholder="https://your-provider.example/v1" autoComplete="off" /></label>}
+    {hasEndpoint && <label>API base URL<input type="url" required={compatible && enabled} value={endpoint} onChange={e => setEndpoint(e.target.value)} placeholder={config.kind === 'gemini' ? 'https://your-gemini-endpoint.example' : 'https://your-provider.example/v1'} autoComplete="off" /></label>}
+    {config.kind === 'gemini' && <p className="cf-hint">Origin only, no /v1beta suffix — the Gemini client adds the version path itself. Leave blank to use Google.</p>}
     {(compatible || config.kind === 'gemini') && <label>Model ID<input required={compatible && enabled} value={model} onChange={e => setModel(e.target.value)} placeholder="Exact model ID from your provider" autoComplete="off" /></label>}
     {config.kind === 'upload_post' && <label>Default social profile<input value={model} onChange={e => setModel(e.target.value)} placeholder="Upload-Post profile username" autoComplete="off" /></label>}
     <label>API key<input type="password" value={token} onChange={e => setToken(e.target.value)} autoComplete="off" placeholder={config.token_configured ? 'Key saved · leave blank to keep it' : compatible ? 'Optional for local endpoints' : 'Paste your API key'} /></label>

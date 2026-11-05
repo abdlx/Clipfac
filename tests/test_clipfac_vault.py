@@ -57,6 +57,27 @@ def test_disable_and_delete_have_explicit_environment_behavior(isolated, monkeyp
     assert os.environ["GEMINI_API_KEY"] == "deployment-secret"
 
 
+def test_gemini_custom_endpoint_is_stored_and_applied(isolated, monkeypatch):
+    monkeypatch.setitem(vault._BASE_ENV, "GOOGLE_GEMINI_BASE_URL", None)
+    os.environ.pop("GOOGLE_GEMINI_BASE_URL", None)
+    result = vault.save("gemini", vault.ProviderUpdate(
+        endpoint="https://gemini-proxy.example", model="test-model", token="test-secret"))
+    assert result["endpoint"] == "https://gemini-proxy.example"
+    assert os.environ["GOOGLE_GEMINI_BASE_URL"] == "https://gemini-proxy.example"
+    # Restart restores the saved endpoint from the vault.
+    os.environ.pop("GOOGLE_GEMINI_BASE_URL", None)
+    vault.apply_runtime()
+    assert os.environ["GOOGLE_GEMINI_BASE_URL"] == "https://gemini-proxy.example"
+    # A blank endpoint means Google's default: no override variable at all.
+    vault.save("gemini", vault.ProviderUpdate(endpoint="", model="test-model"))
+    assert "GOOGLE_GEMINI_BASE_URL" not in os.environ
+    # Disabling removes the override; deleting restores the deployment env.
+    vault.save("gemini", vault.ProviderUpdate(endpoint="https://gemini-proxy.example", enabled=False))
+    assert "GOOGLE_GEMINI_BASE_URL" not in os.environ
+    vault.delete("gemini")
+    assert "GOOGLE_GEMINI_BASE_URL" not in os.environ
+
+
 def test_endpoint_cannot_hide_credentials_in_url():
     for endpoint in ("file:///tmp/key", "https://user:pass@host.example/v1", "https://host.example/v1?token=secret"):
         with pytest.raises(ValueError):

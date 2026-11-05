@@ -39,7 +39,13 @@ the build context. The entire trusted host must still be protected: local
 encryption is not protection against an attacker who has both key and database.
 
 Supported settings:
-- Gemini: native text selection and upstream vision/layout stages.
+- Gemini: native text selection and upstream vision/layout stages. A custom base
+  URL (GOOGLE_GEMINI_BASE_URL, also editable in Provider connections) points the
+  native Gemini client at a Gemini-compatible endpoint instead of Google. Give
+  the origin only, e.g. https://your-endpoint.example — the SDK appends the API
+  version, so no /v1beta suffix. Leave it blank for Google's endpoint. All
+  native Gemini calls (selection, director, vision, layout, thumbnails) share
+  the same base URL.
 - Compatible text endpoint: LLM_BASE_URL / LLM_MODEL / LLM_API_KEY.
 - Compatible vision endpoint: CLIPFAC_VISION_BASE_URL / MODEL / API_KEY.
 - Upload-Post, including a default profile username.

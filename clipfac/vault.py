@@ -16,7 +16,7 @@ from clipfac.models import StrictModel
 router = APIRouter(prefix="/api/clipfac/providers", tags=["Provider settings"])
 _LOCK = threading.RLock()
 MAPPING = {
-    "gemini": {"token": "GEMINI_API_KEY", "model": "GEMINI_MODEL"},
+    "gemini": {"token": "GEMINI_API_KEY", "model": "GEMINI_MODEL", "endpoint": "GOOGLE_GEMINI_BASE_URL"},
     "text": {"token": "LLM_API_KEY", "endpoint": "LLM_BASE_URL", "model": "LLM_MODEL"},
     "vision": {"token": "CLIPFAC_VISION_API_KEY", "endpoint": "CLIPFAC_VISION_BASE_URL", "model": "CLIPFAC_VISION_MODEL"},
     "upload_post": {"token": "UPLOAD_POST_API_KEY", "model": "CLIPFAC_UPLOAD_PROFILE"},
