@@ -43,7 +43,7 @@ def reserve(owner, key, request, brief):
                 raise Conflict("Idempotency key already belongs to a different request")
             return decode(row), False
         identity = str(uuid.uuid4())
-        db.execute("INSERT INTO productions VALUES (?,?,?,?,?,?,?,?,?,?)",
+        db.execute("INSERT INTO productions VALUES (?,?,?,?,?,?,?,?,?)",
                    (identity, owner, key, digest, encoded, json.dumps(brief), "submitting", None, time.time()))
         db.commit()
         return get(identity, owner), True
