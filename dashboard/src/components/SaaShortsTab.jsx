@@ -1379,10 +1379,10 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
                   <div className="card p-4 space-y-3 mt-2">
                     <h3 className="eyebrow">Publish to Social Media</h3>
 
-                    {!uploadPostKey ? (
-                      <p className="text-xs lowercase text-muted">Set your Upload-Post API key in Settings to enable publishing.</p>
-                    ) : (
-                      <>
+                    {/* The key + profile resolve server-side from the saved
+                        workspace connection, so this is never gated on a key
+                        in the browser. */}
+                    <>
                         {/* Platform toggles */}
                         <SegmentedControl
                           multi
@@ -1443,8 +1443,11 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
                             try {
                               const payload = {
                                 job_id: jobId,
-                                api_key: uploadPostKey,
-                                user_id: uploadUserId,
+                                // Sent only when the browser has them (override);
+                                // otherwise the server resolves the key + profile
+                                // from the saved connection.
+                                ...(uploadPostKey ? { api_key: uploadPostKey } : {}),
+                                ...(uploadUserId ? { user_id: uploadUserId } : {}),
                                 platforms: selected,
                                 title: genResult.script?.title,
                                 description: genResult.script?.caption || genResult.script?.full_narration,
@@ -1485,7 +1488,6 @@ export default function SaaShortsTab({ geminiApiKey, elevenLabsKey, falKey, uplo
                           </p>
                         )}
                       </>
-                    )}
                   </div>
                 </div>
               </div>

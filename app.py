@@ -232,8 +232,33 @@ def resolve_post_profile(forced_profile: Optional[str], client_profile: Optional
     # key resolved above, so it picks its own profile.
     profile = forced_profile or client_profile
     if not profile:
-        raise HTTPException(status_code=400, detail="Missing Upload-Post user profile")
+        raise HTTPException(
+            status_code=400,
+            detail="No Upload-Post profile to post as — set a default profile in Provider connections, or pick a profile in the editor")
     return profile
+
+
+async def _server_post_profile(request: Request) -> Optional[str]:
+    """The Upload-Post profile to post as, resolved server-side (self-host).
+
+    Order: the vault's default profile (CLIPFAC_UPLOAD_PROFILE), then the
+    single connected profile. Returns None when no profile can be determined,
+    so the caller can ask the user to pick one instead of failing silently.
+    The browser is never asked for a key or a profile.
+    """
+    profile = os.environ.get("CLIPFAC_UPLOAD_PROFILE")
+    if profile:
+        return profile
+    try:
+        from clipfac.api import client as clipfac_client
+        async with clipfac_client(request) as api:
+            response = await api.get("/api/social/user")
+        candidates = response.json().get("profiles", []) if response.is_success else []
+        if len(candidates) == 1:
+            return candidates[0].get("username")
+    except Exception:
+        pass
+    return None
 
 
 def upgrade_url(src: str = "api", plan: str = "starter") -> str:
@@ -6436,8 +6461,13 @@ async def post_to_socials(req: SocialPostRequest, request: Request):
     # used and their own profile is forced (body api_key / user_id are ignored).
     upload_key, forced_profile = await resolve_upload_post(request, req.api_key)
     if not upload_key:
-        raise HTTPException(status_code=400, detail="Missing Upload-Post API key")
-    post_user = resolve_post_profile(forced_profile, req.user_id)
+        raise HTTPException(status_code=400, detail="Upload-Post is not connected — add your Upload-Post key in Provider connections")
+    # Self-host: the profile may come from the vault default or the single
+    # connected profile — the browser is never asked for it.
+    client_profile = req.user_id
+    if not BILLING_ENABLED and not client_profile:
+        client_profile = await _server_post_profile(request)
+    post_user = resolve_post_profile(forced_profile, client_profile)
 
     job = jobs[req.job_id]
     await _assert_job_owner(request, job)
@@ -6634,7 +6664,7 @@ async def get_social_user(request: Request):
     """
     api_key, forced_profile = await resolve_upload_post(request, None)
     if not api_key:
-         raise HTTPException(status_code=400, detail="Missing X-Upload-Post-Key header")
+         raise HTTPException(status_code=400, detail="Upload-Post is not connected — add your Upload-Post key in Provider connections")
 
     if BILLING_ENABLED:
         return await _managed_social_user(request, api_key, forced_profile)
@@ -6724,7 +6754,7 @@ async def _social_analytics_auth(request: Request, byok_profile: Optional[str]):
             # Signed-in free user (or no auth at all): social posting is
             # paid-only in cloud, so there are no posts to measure either.
             raise payment_required("no_plan", "Social analytics needs an active OpenShorts plan.")
-        raise HTTPException(status_code=400, detail="Missing X-Upload-Post-Key header")
+        raise HTTPException(status_code=400, detail="Upload-Post is not connected — add your Upload-Post key in Provider connections")
     if forced_profile:
         user = await _user_from_request(request)
         if user:
@@ -7631,8 +7661,13 @@ async def thumbnail_publish(
     # Managed users: server key + forced own profile; body fields ignored.
     upload_key, forced_profile = await resolve_upload_post(request, api_key)
     if not upload_key:
-        raise HTTPException(status_code=400, detail="Missing Upload-Post API key")
-    post_user = resolve_post_profile(forced_profile, user_id)
+        raise HTTPException(status_code=400, detail="Upload-Post is not connected — add your Upload-Post key in Provider connections")
+    # Self-host: the profile may come from the vault default or the single
+    # connected profile — the browser is never asked for it.
+    client_profile = user_id
+    if not BILLING_ENABLED and not client_profile:
+        client_profile = await _server_post_profile(request)
+    post_user = resolve_post_profile(forced_profile, client_profile)
     await _check_social_post_rate(request)
 
     session = thumbnail_sessions[session_id]
@@ -7968,8 +8003,13 @@ async def saasshorts_post_to_socials(req: SaaSPostRequest, request: Request):
 
     upload_key, forced_profile = await resolve_upload_post(request, req.api_key)
     if not upload_key:
-        raise HTTPException(status_code=400, detail="Missing Upload-Post API key")
-    post_user = resolve_post_profile(forced_profile, req.user_id)
+        raise HTTPException(status_code=400, detail="Upload-Post is not connected — add your Upload-Post key in Provider connections")
+    # Self-host: the profile may come from the vault default or the single
+    # connected profile — the browser is never asked for it.
+    client_profile = req.user_id
+    if not BILLING_ENABLED and not client_profile:
+        client_profile = await _server_post_profile(request)
+    post_user = resolve_post_profile(forced_profile, client_profile)
 
     job = saas_jobs[req.job_id]
     await _assert_job_owner(request, job)

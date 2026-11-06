@@ -764,7 +764,7 @@ function App() {
   }, [falKey]);
 
   useEffect(() => {
-    if ((uploadPostKey || isManaged) && userProfiles.length === 0) {
+    if (userProfiles.length === 0) {
       fetchUserProfiles({ silent: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -856,10 +856,10 @@ function App() {
   }, [status, jobId, refreshMe]);
 
 
-  // silent: background auto-fetch — never alert(), just log. Managed users need
-  // no local key (the server resolves its own); BYOK sends the header.
+  // silent: background auto-fetch — never alert(), just log. The server
+  // resolves the Upload-Post key from the saved workspace connection, so this
+  // runs with no key in the browser; a browser key is only ever an override.
   const fetchUserProfiles = async ({ silent = false } = {}) => {
-    if (!uploadPostKey && !isManaged) return;
     try {
       const res = await apiFetch('/api/social/user', {
         headers: uploadPostKey ? { 'X-Upload-Post-Key': uploadPostKey } : {}
@@ -885,8 +885,10 @@ function App() {
   // `keysMissing` now means "self-host BYOK keys missing" — it never fires on hosted.
   // A self-hosted server running the moment picker on a local LLM
   // (LLM_BASE_URL) does not need a Gemini key for the core pipeline.
+  // Upload-Post is not part of this gate: publishing resolves the saved
+  // workspace connection server-side, so the editor never needs the key.
   const geminiOk = !!apiKey || !!localLlm;
-  const keysMissing = !billingEnabled && (!geminiOk || !uploadPostKey);
+  const keysMissing = !billingEnabled && !geminiOk;
   const needsPlan = billingEnabled && !isManaged;   // hosted, signed-out or no active plan/trial
 
   // Fresh sign-up: Clip Generator tutorial (AuthContext set os_show_clip_tutorial
@@ -1583,11 +1585,7 @@ function App() {
               >
                 <AlertTriangle size={12} />
                 <span className="hidden md:inline">
-                  {!geminiOk && !uploadPostKey
-                    ? 'Gemini & Upload-Post keys missing'
-                    : !geminiOk
-                      ? 'Gemini API Key Missing'
-                      : 'Upload-Post API Key Missing'}
+                  {'Gemini API Key Missing'}
                 </span>
                 <span className="md:hidden">keys missing</span>
               </button>
@@ -1603,11 +1601,7 @@ function App() {
               <div className="min-w-0">
                 <span className="font-medium text-ink">Required API keys missing.</span>{' '}
                 <span className="text-muted">
-                  {!geminiOk && !uploadPostKey
-                    ? 'Set your Gemini and Upload-Post API keys to use Clipfac.'
-                    : !geminiOk
-                      ? 'Set your Gemini API key to use Clipfac.'
-                      : 'Set your Upload-Post API key to use Clipfac.'}
+                  {'Set your Gemini API key to use Clipfac.'}
                 </span>
               </div>
             </div>
@@ -1717,26 +1711,17 @@ function App() {
                     </div>
                     <h2 className="text-base font-medium text-ink lowercase">Social Integration</h2>
                   </div>
-                  <span className="badge-warn">Required</span>
+                  <span className="badge-warn">Optional</span>
                 </div>
                 <p className="text-xs text-muted mb-6 leading-relaxed">
-                  Required to publish your clips to TikTok, Instagram Reels, and YouTube Shorts via <strong>Upload-Post</strong>.
-                  Includes a <strong>free tier</strong> (no credit card required).
+                  Publish your clips to TikTok, Instagram Reels, and YouTube Shorts via <strong>Upload-Post</strong>.
+                  Includes a <strong>free tier</strong> (no credit card required). The connection is saved once in the
+                  workspace (Provider connections) and the editor uses it — no key is asked for here.
                 </p>
                 <div className="space-y-4">
-                  <label className="block text-sm text-muted">Upload-Post API Key</label>
-                  <div className="flex flex-col sm:flex-row gap-2">
-                    <input
-                      type="password"
-                      value={uploadPostKey}
-                      onChange={(e) => setUploadPostKey(e.target.value)}
-                      className="input-field"
-                      placeholder="ey..."
-                    />
-                    <button onClick={fetchUserProfiles} className="btn-quiet py-2 px-4 text-sm">
-                      Connect
-                    </button>
-                  </div>
+                  <button onClick={fetchUserProfiles} className="btn-quiet py-2 px-4 text-sm">
+                    Refresh profiles
+                  </button>
                   <div className="text-xs text-muted leading-relaxed">
                     Connect your Upload-Post account to enable one-click publishing.
                     <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -1755,7 +1740,7 @@ function App() {
                     </div>
                     <br />
                     <span className="text-muted">
-                      Keys are only stored in your browser. They are sent to the backend only to process your request, never stored server-side.
+                      Paste your Upload-Post API key in the workspace, under Provider connections (the Upload-Post card). It is stored encrypted on the server and never shown back.
                     </span>
                   </div>
                 </div>
@@ -2459,11 +2444,7 @@ function App() {
         isOpen={showKeyModal}
         onClose={() => setShowKeyModal(false)}
         eyebrow="SETUP"
-        title={!geminiOk && !uploadPostKey
-          ? 'Required API Keys Missing'
-          : !geminiOk
-            ? 'Gemini API Key Required'
-            : 'Upload-Post API Key Required'}
+        title={'Gemini API Key Required'}
         footer={
           <div className="flex gap-3">
             <button
@@ -2483,7 +2464,8 @@ function App() {
       >
         <div className="space-y-4">
           <p className="text-sm text-muted">
-            Clipfac needs both a <strong className="text-ink2">Gemini</strong> API key and an <strong className="text-ink2">Upload-Post</strong> API key. Both have free tiers.
+            Clipfac needs a <strong className="text-ink2">Gemini</strong> API key. It has a free tier.
+            Upload-Post is optional — when you want to publish, its connection is saved once in the workspace (Provider connections).
           </p>
 
           {/* Gemini block */}
@@ -2507,37 +2489,6 @@ function App() {
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && e.target.value.trim()) {
                       setApiKey(e.target.value.trim());
-                    }
-                  }}
-                />
-              </>
-            )}
-          </div>
-
-          {/* Upload-Post block */}
-          <div className={`rounded-input p-4 space-y-2 border ${!uploadPostKey ? 'border-rule2' : 'border-rule opacity-70'}`}>
-            <p className="text-xs font-medium text-ink flex items-center gap-2">
-              {uploadPostKey ? <Check size={12} className="text-ok" /> : <AlertTriangle size={12} className="text-warn" />}
-              Upload-Post API Key {uploadPostKey && <span className="text-ok">— set</span>}
-            </p>
-            {!uploadPostKey && (
-              <>
-                <p className="text-xs text-muted">
-                  Required to publish your clips to TikTok, Instagram Reels, and YouTube Shorts. Free tier available, no credit card needed.
-                </p>
-                <ol className="text-xs text-muted space-y-1 list-decimal list-inside">
-                  <li>Register at <a href="https://app.upload-post.com/login" target="_blank" rel="noopener noreferrer" className="text-brass underline">app.upload-post.com</a></li>
-                  <li>Connect your TikTok, Instagram, or YouTube accounts</li>
-                  <li>Go to <a href="https://app.upload-post.com/api-keys" target="_blank" rel="noopener noreferrer" className="text-brass underline">API Keys</a> and generate one</li>
-                  <li>Paste it below</li>
-                </ol>
-                <input
-                  type="text"
-                  placeholder="Paste your Upload-Post API key here..."
-                  className="input-field"
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && e.target.value.trim()) {
-                      setUploadPostKey(e.target.value.trim());
                     }
                   }}
                 />

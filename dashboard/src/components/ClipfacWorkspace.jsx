@@ -324,6 +324,7 @@ function ProviderCard({ config, onSave, onRemove }) {
     upload_post: ['Upload-Post', 'Connected social accounts and publishing.'],
     elevenlabs: ['ElevenLabs', 'Voice generation and dubbing.'],
     fal: ['fal.ai', 'Image and video generation in the existing editor.'],
+    youtube: ['YouTube cookies (yt-dlp)', 'Paste your YouTube cookies so video downloads use your signed-in session instead of failing YouTube’s bot checks.'],
   }
   const [enabled, setEnabled] = useState(config.enabled)
   const [endpoint, setEndpoint] = useState(config.endpoint || '')
@@ -355,8 +356,11 @@ function ProviderCard({ config, onSave, onRemove }) {
     {config.kind === 'gemini' && <p className="cf-hint">Origin only, no /v1beta suffix — the Gemini client adds the version path itself. Leave blank to use Google.</p>}
     {(compatible || config.kind === 'gemini') && <label>Model ID<input required={compatible && enabled} value={model} onChange={e => setModel(e.target.value)} placeholder="Exact model ID from your provider" autoComplete="off" /></label>}
     {config.kind === 'upload_post' && <label>Default social profile<input value={model} onChange={e => setModel(e.target.value)} placeholder="Upload-Post profile username" autoComplete="off" /></label>}
-    <label>API key<input type="password" value={token} onChange={e => setToken(e.target.value)} autoComplete="off" placeholder={config.token_configured ? 'Key saved · leave blank to keep it' : compatible ? 'Optional for local endpoints' : 'Paste your API key'} /></label>
+    {config.kind === 'youtube'
+      ? <><label>YouTube cookies (Netscape cookies.txt)<textarea rows={8} value={token} onChange={e => setToken(e.target.value)} autoComplete="off" placeholder={config.token_configured ? 'Cookies saved · paste a fresh export to replace them' : 'Paste the full cookies.txt export for youtube.com'} spellCheck={false} /></label>
+        <p className="cf-hint">Export from your browser with the “Get cookies.txt LOCALLY” extension while signed in to YouTube. Cookies expire — if downloads start failing again, paste a fresh export. Stored encrypted, never shown back.</p></>
+      : <label>API key<input type="password" value={token} onChange={e => setToken(e.target.value)} autoComplete="off" placeholder={config.token_configured ? 'Key saved · leave blank to keep it' : compatible ? 'Optional for local endpoints' : 'Paste your API key'} /></label>}
     <label className="cf-check"><input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />Use this provider configuration</label>
-    <div className="cf-plan-actions"><button type="button" className="cf-text-button" disabled={saving || config.source !== 'vault'} onClick={remove}>Use deployment environment</button><button className="cf-primary" disabled={saving}>{saving ? <Loader2 size={14} className="cf-spin" /> : <KeyRound size={14} />}Save connection</button></div>
+    <div className="cf-plan-actions"><button type="button" className="cf-text-button" disabled={saving || config.source !== 'vault'} onClick={remove}>{config.kind === 'youtube' ? 'Remove cookies' : 'Use deployment environment'}</button><button className="cf-primary" disabled={saving}>{saving ? <Loader2 size={14} className="cf-spin" /> : <KeyRound size={14} />}Save connection</button></div>
   </form>
 }

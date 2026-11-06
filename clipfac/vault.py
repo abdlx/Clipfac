@@ -22,6 +22,10 @@ MAPPING = {
     "upload_post": {"token": "UPLOAD_POST_API_KEY", "model": "CLIPFAC_UPLOAD_PROFILE"},
     "elevenlabs": {"token": "ELEVENLABS_API_KEY"},
     "fal": {"token": "FAL_KEY"},
+    # Not an LLM provider: the operator's YouTube session cookies, stored as the
+    # token blob. apply_runtime() exposes them as YOUTUBE_COOKIES, which the
+    # downloader already reads per job and writes to /app/cookies.txt for yt-dlp.
+    "youtube": {"token": "YOUTUBE_COOKIES"},
 }
 ENV_KEYS = {value for values in MAPPING.values() for value in values.values()} | {"LLM_PROVIDER"}
 _BASE_ENV = {key: os.environ.get(key) for key in ENV_KEYS}
@@ -31,7 +35,8 @@ class ProviderUpdate(StrictModel):
     enabled: bool = True
     endpoint: str | None = Field(default=None, max_length=4096)
     model: str | None = Field(default=None, max_length=200)
-    token: str | None = Field(default=None, max_length=8192)
+    # 64K: a full YouTube cookies.txt export can exceed the old 8K cap.
+    token: str | None = Field(default=None, max_length=65536)
     profile: str | None = Field(default=None, max_length=200)
 
     @model_validator(mode="after")
@@ -99,9 +104,48 @@ def public_settings():
     return result
 
 
+def _validate_youtube_cookies(blob):
+    """A cookies blob must parse as a Netscape cookie file with a youtube.com cookie.
+
+    Rejects garbage pastes before they are encrypted, so a bad save can never
+    silently break every YouTube download. Accepts exports with or without the
+    '# Netscape HTTP Cookie File' header line.
+    """
+    import tempfile
+    from http.cookiejar import MozillaCookieJar
+    text = blob.strip()
+    if not text:
+        raise ValueError("YouTube cookies are empty")
+    if not text.startswith("# Netscape"):
+        text = "# Netscape HTTP Cookie File\n" + text
+    # Pre-check line shape first: handed a blob that is not a cookie file, the
+    # stdlib prints a noisy "http.cookiejar bug!" traceback before raising.
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if len(line.split("\t")) < 7:
+            raise ValueError("That does not look like a Netscape cookies.txt export")
+    jar = MozillaCookieJar()
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as handle:
+        handle.write(text)
+        path = handle.name
+    try:
+        jar.load(path, ignore_discard=True, ignore_expires=True)
+    except Exception as exc:
+        raise ValueError("That does not look like a Netscape cookies.txt export") from exc
+    finally:
+        os.unlink(path)
+    if not any("youtube.com" in cookie.domain for cookie in jar):
+        raise ValueError("No youtube.com cookies in the export — export cookies for youtube.com")
+    return True
+
+
 def save(kind, update):
     if kind not in MAPPING:
         raise ValueError("Unknown provider kind")
+    if kind == "youtube" and update.token:
+        _validate_youtube_cookies(update.token)
     with _LOCK, store.connect() as db:
         setup(db)
         previous = db.execute("SELECT * FROM provider_settings WHERE kind=?", (kind,)).fetchone()

@@ -384,8 +384,9 @@ export default function ThumbnailStudio({ geminiApiKey, uploadPostKey, uploadUse
   };
 
   // --- Publish to YouTube ---
+  // The key + profile resolve server-side from the saved workspace
+  // connection; the browser values below are only ever overrides.
   const handlePublish = async () => {
-    if (!managed && (!uploadPostKey || !uploadUserId)) return alert('Please configure your Upload-Post API key and user in Settings first.');
     const finalTitle = selectedTitle || manualTitle;
     if (!finalTitle) return alert('No title selected.');
     if (!selectedThumbnail) return alert('Please select a thumbnail first.');
@@ -399,8 +400,8 @@ export default function ThumbnailStudio({ geminiApiKey, uploadPostKey, uploadUse
       formData.append('title', finalTitle);
       formData.append('description', description);
       formData.append('thumbnail_url', selectedThumbnail);
-      formData.append('api_key', uploadPostKey);
-      formData.append('user_id', uploadUserId);
+      if (uploadPostKey) formData.append('api_key', uploadPostKey);
+      if (uploadUserId) formData.append('user_id', uploadUserId);
 
       // Submit the publish job — returns immediately with a publish_id
       const res = await apiFetch('/api/thumbnail/publish', {
@@ -1145,41 +1146,26 @@ export default function ThumbnailStudio({ geminiApiKey, uploadPostKey, uploadUse
               </div>
 
               {/* Publish Button */}
-              {(!managed && (!uploadPostKey || !uploadUserId)) ? (
-                <div className="glass-panel p-6 space-y-3">
-                  <div className="flex items-center gap-2 text-warn">
-                    <AlertCircle size={16} />
-                    <span className="text-sm font-medium lowercase">Upload-Post Not Configured</span>
-                  </div>
-                  <p className="text-xs text-muted">
-                    To publish directly to YouTube, configure your Upload-Post API key and connect a profile in Settings.
-                  </p>
-                  <button
-                    onClick={() => { }}
-                    className="text-xs lowercase text-brass hover:underline flex items-center gap-1"
-                  >
-                    <Settings size={12} /> Go to Settings
-                  </button>
-                </div>
-              ) : (
-                <button
-                  onClick={handlePublish}
-                  disabled={isPublishing}
-                  className="w-full btn-primary"
-                >
-                  {isPublishing ? (
-                    <>
-                      <Loader2 size={16} className="animate-spin" />
-                      Publishing to YouTube...
-                    </>
-                  ) : (
-                    <>
-                      <Youtube size={16} />
-                      Publish to YouTube
-                    </>
-                  )}
-                </button>
-              )}
+              {/* Publish Button — the key + profile resolve server-side from
+                  the saved workspace connection, so this is never gated on a
+                  key in the browser. */}
+              <button
+                onClick={handlePublish}
+                disabled={isPublishing}
+                className="w-full btn-primary"
+              >
+                {isPublishing ? (
+                  <>
+                    <Loader2 size={16} className="animate-spin" />
+                    Publishing to YouTube...
+                  </>
+                ) : (
+                  <>
+                    <Youtube size={16} />
+                    Publish to YouTube
+                  </>
+                )}
+              </button>
 
               {/* Polling status */}
               {isPublishing && (

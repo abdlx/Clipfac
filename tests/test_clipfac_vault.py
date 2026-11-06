@@ -113,3 +113,42 @@ def test_reader_agent_cannot_change_provider_settings(isolated, monkeypatch):
     assert call(app, "GET", "/api/clipfac/providers", headers=headers).status_code == 200
     assert call(app, "PUT", "/api/clipfac/providers/gemini", headers=headers,
                 json={"token": "attacker-key"}).status_code == 403
+
+
+YOUTUBE_COOKIES = """# Netscape HTTP Cookie File
+.youtube.com\tTRUE\t/\tFALSE\t1790000000\tVISITOR_INFO1_LIVE\tQWERTY123
+.youtube.com\tTRUE\t/\tTRUE\t1790000000\tLOGIN_INFO\tABCDEF456
+"""
+
+
+def test_youtube_cookies_are_stored_encrypted_and_applied(isolated):
+    result = vault.save("youtube", vault.ProviderUpdate(token=YOUTUBE_COOKIES))
+    assert result["kind"] == "youtube"
+    assert result["token_configured"]
+    assert "QWERTY123" not in json.dumps(vault.public_settings())
+    assert os.environ["YOUTUBE_COOKIES"] == YOUTUBE_COOKIES
+    assert YOUTUBE_COOKIES.encode() not in (isolated / "private.db").read_bytes()
+    # Restart restores the cookies from the vault.
+    os.environ.pop("YOUTUBE_COOKIES", None)
+    vault.apply_runtime()
+    assert os.environ["YOUTUBE_COOKIES"] == YOUTUBE_COOKIES
+
+
+def test_youtube_cookies_reject_garbage(isolated):
+    with pytest.raises(ValueError):
+        vault.save("youtube", vault.ProviderUpdate(token="definitely not a cookie file"))
+    with pytest.raises(ValueError):
+        vault.save("youtube", vault.ProviderUpdate(
+            token="# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tFALSE\t1790000000\tFOO\tbar\n"))
+    assert os.environ.get("YOUTUBE_COOKIES", "") == ""
+
+
+def test_youtube_cookies_disable_and_delete_clear_env(isolated, monkeypatch):
+    monkeypatch.setitem(vault._BASE_ENV, "YOUTUBE_COOKIES", "deployment-cookies")
+    os.environ["YOUTUBE_COOKIES"] = "deployment-cookies"
+    vault.save("youtube", vault.ProviderUpdate(token=YOUTUBE_COOKIES))
+    assert os.environ["YOUTUBE_COOKIES"] == YOUTUBE_COOKIES
+    vault.save("youtube", vault.ProviderUpdate(enabled=False))
+    assert "YOUTUBE_COOKIES" not in os.environ
+    vault.delete("youtube")
+    assert os.environ["YOUTUBE_COOKIES"] == "deployment-cookies"

@@ -112,11 +112,11 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, uploa
 
     const selectedPlatforms = Object.keys(platforms).filter(k => platforms[k]);
 
-    // Managed (cloud plan/trial) users post with the server-side key — no BYOK needed
-    const canPost = isManaged || (uploadPostKey && uploadUserId);
+    // The key + profile resolve server-side from the saved workspace
+    // connection; the browser values below are only ever overrides.
+    const canPost = true;
 
     const handleScheduleAll = async () => {
-        if (!canPost) return;
         if (selectedPlatforms.length === 0) return;
 
         setScheduling(true);
@@ -136,8 +136,10 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, uploa
             const payload = {
                 job_id: jobId,
                 clip_index: index,
-                api_key: uploadPostKey,
-                user_id: uploadUserId,
+                // Sent only when the browser has them (override); otherwise the
+                // server resolves the key + profile from the saved connection.
+                ...(uploadPostKey ? { api_key: uploadPostKey } : {}),
+                ...(uploadUserId ? { user_id: uploadUserId } : {}),
                 platforms: selectedPlatforms,
                 title: clip.video_title_for_youtube_short || 'Viral Short',
                 description: clip.video_description_for_instagram || clip.video_description_for_tiktok || '',
@@ -225,13 +227,6 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, uploa
             footer={footer}
         >
             <p className="readout mb-4">{clips?.length || 0} CLIPS · 1/DAY</p>
-
-            {!canPost && (
-                <div className="mb-4 p-3 bg-warn/10 text-warn text-xs rounded-input flex items-start gap-2">
-                    <AlertCircle size={14} className="mt-0.5 shrink-0" />
-                    <div>Set your Upload-Post API key in Settings first.</div>
-                </div>
-            )}
 
             {/* Time + Timezone */}
             <div className="mb-5 grid grid-cols-2 gap-3">
