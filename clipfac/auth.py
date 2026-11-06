@@ -101,18 +101,24 @@ def required_scope(path, method, tool=None):
 
 class InstallationAuth(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
+        # CORS preflights carry no credentials and change nothing. Let the
+        # CORS layer answer them instead of rejecting them for having no
+        # token: a rejected preflight makes every cross-origin call fail in
+        # the browser even though the server would have answered it.
+        if request.method == "OPTIONS":
+            return await call_next(request)
         path = request.url.path
         protected = path.startswith(("/api/", "/videos/", "/thumbnails/", "/mcp", "/gallery", "/video/"))
         if not enabled() or not protected or path in ("/api/config", "/api/clipfac/session"):
             return await call_next(request)
         user = principal(request)
         if not user:
-            return JSONResponse({"detail": "Installation token required"}, status_code=401)
+            return JSONResponse({"detail": "Installation token required"}, status_code=401, headers=_cors_headers(request))
         owner, scopes, cookie_auth = user
         if cookie_auth and request.method not in ("GET", "HEAD", "OPTIONS"):
             origin = request.headers.get("origin")
             if not origin or urlparse(origin).netloc != request.url.netloc:
-                return JSONResponse({"detail": "Same-origin request required"}, status_code=403)
+                return JSONResponse({"detail": "Same-origin request required"}, status_code=403, headers=_cors_headers(request))
         scope = required_scope(path, request.method)
         if path.rstrip("/") == "/mcp":
             scope = "read"
@@ -126,9 +132,30 @@ class InstallationAuth(BaseHTTPMiddleware):
                 except (ValueError, TypeError):
                     pass  # MCP returns its own parse error.
         if scope not in scopes and "admin" not in scopes:
-            return JSONResponse({"detail": f"Token requires {scope} scope"}, status_code=403)
+            return JSONResponse({"detail": f"Token requires {scope} scope"}, status_code=403, headers=_cors_headers(request))
         request.state.clipfac_owner = owner
         return await call_next(request)
+
+
+def _cors_headers(request):
+    """CORS headers for InstallationAuth's own rejections.
+
+    This middleware is added after CORSMiddleware, so it runs first and its
+    early 401/403 responses never pass through the CORS layer. Without these
+    headers the browser hides the rejection from fetch(): the workspace can
+    neither read the 401 (so no login screen ever appears) nor tell a denied
+    call from a network failure. The values mirror what CORSMiddleware sends
+    for allowed origins on this self-host install (origin echoed because
+    credentials are allowed).
+    """
+    origin = request.headers.get("origin")
+    if not origin:
+        return {}
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+        "Vary": "Origin",
+    }
 
 
 @router.post("/api/clipfac/session")

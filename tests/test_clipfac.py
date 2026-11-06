@@ -134,6 +134,41 @@ def test_cookie_session_requires_same_origin_for_writes(monkeypatch):
         assert call(app, "POST", "/api/social/post", headers=headers).status_code == status
 
 
+def test_split_origin_cors_preflight_and_401_are_readable(monkeypatch):
+    """Split-origin workspace: preflights must pass and 401s must be readable.
+
+    InstallationAuth runs outside CORSMiddleware, so its rejections used to
+    carry no CORS headers: the browser hid every 401 from fetch(), the
+    workspace never showed its login screen, and preflights for Bearer calls
+    failed outright. Regression test for the empty Providers page.
+    """
+    from fastapi.middleware.cors import CORSMiddleware
+    monkeypatch.setenv("CLIPFAC_ADMIN_TOKEN", "admin-" + "a" * 32)
+    monkeypatch.setenv("CLIPFAC_AGENT_TOKENS", "[]")
+    app = FastAPI()
+    app.add_middleware(
+        CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+        allow_methods=["*"], allow_headers=["*"],
+    )
+    app.add_middleware(InstallationAuth)
+    app.include_router(auth_router)
+    @app.get("/api/clipfac/presets")
+    def presets():
+        return {"ok": True}
+    origin = "http://clipfac.example"
+    preflight = call(app, "OPTIONS", "/api/clipfac/presets", headers={
+        "Origin": origin, "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "authorization",
+    })
+    assert preflight.status_code == 200
+    assert preflight.headers.get("access-control-allow-origin") == origin
+    denied = call(app, "GET", "/api/clipfac/presets", headers={"Origin": origin})
+    assert denied.status_code == 401
+    assert denied.headers.get("access-control-allow-origin") == origin
+    headers = {"Authorization": "Bearer admin-" + "a" * 32, "Origin": origin}
+    assert call(app, "GET", "/api/clipfac/presets", headers=headers).status_code == 200
+
+
 def test_missing_production_token_fails_closed(monkeypatch):
     monkeypatch.delenv("CLIPFAC_ADMIN_TOKEN", raising=False)
     monkeypatch.setenv("CLIPFAC_REQUIRE_AUTH", "1")
