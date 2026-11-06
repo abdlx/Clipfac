@@ -104,5 +104,9 @@ def choose_direction(transcript, frames, campaign, requested_style="auto", gemin
     # Explicit user/agent choices always win over model suggestions.
     if requested_style != "auto":
         profile.style = requested_style
+    if profile.style == "gaming":
+        # Gameplay uses a deterministic renderer, never screen-presenter or
+        # face tracking inferred from an inventory character.
+        profile.layout = "none"
     return {**profile.model_dump(), "mode": "multimodal" if frames else "transcript_only",
             "fallback": False, "usage": usage}

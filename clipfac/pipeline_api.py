@@ -170,6 +170,24 @@ async def revise_plan(body: plans.RevisePlan, request: Request):
         min_seconds=low / 1000, max_seconds=high / 1000,
         max_clips=previous.get("max_clips", 15), minimum_score=0,
     )
+    # Manual revisions keep exact requested cuts. Validate speech boundaries
+    # without silently snapping an immutable plan or spending on another model.
+    from clip_selection import sentence_aligned_span
+    for cut in body.clips:
+        if cut.candidate_index >= len(data["candidates"]):
+            raise HTTPException(422, "Unknown source candidate")
+        evidence = data["candidates"][cut.candidate_index].get("editorial_review")
+        if evidence is not None and evidence.get("status") != "passed":
+            raise HTTPException(422, {"message": "Candidate is held by editorial review",
+                                      "candidate_index": cut.candidate_index,
+                                      "reasons": evidence.get("reasons", [])})
+        aligned_start, aligned_end, issues = sentence_aligned_span(
+            cut.start_ms / 1000, cut.end_ms / 1000, data.get("transcript"),
+            data["source"]["duration_seconds"], low / 1000, high / 1000)
+        if issues or abs(aligned_start * 1000-cut.start_ms) > 250 or abs(aligned_end * 1000-cut.end_ms) > 250:
+            raise HTTPException(422, {"message": "Revision needs complete speech boundaries",
+                                      "candidate_index": cut.candidate_index, "issues": issues,
+                                      "suggested_range_ms": [round(aligned_start*1000), round(aligned_end*1000)]})
     checked_selection = shortlist(checked["candidates"], requirements, candidate_texts(checked))
     if len(checked_selection["accepted"]) != len(body.clips):
         raise HTTPException(422, {"message": "Revision violates duration, overlap or campaign constraints",

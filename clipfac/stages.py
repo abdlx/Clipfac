@@ -77,6 +77,13 @@ def analyze_source(path, transcript, duration, candidates, output_dir, brief, re
                    "preserve": [], "avoid": [], "fallback": True, "mode": "fallback",
                    "error_type": type(exc).__name__, "usage": None}
         warnings.append("Automatic direction failed; inspect footage before rendering.")
+    from clipfac.editorial import review_candidates
+    reviewed = review_candidates(path, transcript, duration, candidates.get("shorts", []),
+                                 profile["style"], brief.get("campaign"))
+    if profile.get("fallback") and requested_style == "auto":
+        for item in reviewed:
+            item["editorial_review"]["status"] = "held"
+            item["editorial_review"].setdefault("reasons", []).append("automatic_direction_unavailable")
     data = {
         "schema_version": 1,
         "source": {"filename": Path(path).name, "sha256": source_hash(path),
@@ -86,7 +93,7 @@ def analyze_source(path, transcript, duration, candidates, output_dir, brief, re
         "campaign": brief.get("campaign", {}),
         "selection": brief.get("selection", {}),
         "transcript": transcript or {"language": "none", "segments": []},
-        "candidates": candidates.get("shorts", []),
+        "candidates": reviewed,
         "selection_cost": candidates.get("cost_analysis"),
         "sample_timestamps": times,
         "contact_sheet": "clipfac-contact-sheet.jpg" if frames else None,

@@ -10,10 +10,10 @@ PRESETS = {
         "direction": "Favor complete exchanges and clear payoffs. Avoid gratuitous zooms and misleading hooks.",
     },
     "gaming": {
-        "name": "Playmaker", "theme": "gaming", "description": "Gameplay-first composition with compact, high-contrast captions.",
+        "name": "Playmaker", "theme": "gaming", "description": "Stable HUD overview and enlarged centre gameplay, with no avatar tracking.",
         "accent": "#A3FF12", "caption_preset": "lime", "hook_style": "dark",
-        "layouts": ["screencast"], "hook": True,
-        "caption": {"font_name": "Montserrat ExtraBold", "font_size": 40, "highlight_color": "#A3FF12", "effect": "highlight", "border_width": 3, "uppercase": True, "max_chars": 10},
+        "layouts": [], "hook": True,
+        "caption": {"font_name": "Montserrat ExtraBold", "font_size": 30, "highlight_color": "#A3FF12", "effect": "highlight", "border_width": 3, "uppercase": True, "max_chars": 10},
         "direction": "Preserve gameplay context and interface visibility. Select complete reactions and event payoffs.",
     },
     "education": {
@@ -50,7 +50,7 @@ PRESETS = {
 def get_preset(preset_id):
     if preset_id not in PRESETS:
         raise ValueError(f"Unknown style: {preset_id}")
-    return {"id": preset_id, "version": 1, **deepcopy(PRESETS[preset_id])}
+    return {"id": preset_id, "version": 2 if preset_id == "gaming" else 1, **deepcopy(PRESETS[preset_id])}
 
 
 def list_presets():

@@ -1512,6 +1512,14 @@ def _render_clip(input_video, final_output_video, output_format,
         if ok and watermark:
             apply_watermark(final_output_video)
         return ok
+    if (os.environ.get("CLIPFAC_STYLE") == "gaming"
+            and output_format in ("auto", "vertical")
+            and not force_strategy and not crop_overrides):
+        from clipfac.gaming import render as render_gaming
+        ok = render_gaming(input_video, final_output_video)
+        if ok and watermark:
+            apply_watermark(final_output_video)
+        return ok
     aspect = 1.0 if output_format == "square" else ASPECT_RATIO
     return process_video_to_vertical(input_video, final_output_video, aspect_ratio=aspect,
                                      force_strategy=force_strategy,
@@ -2197,28 +2205,6 @@ def get_viral_clips(transcript_result, video_duration, viewer_clips=None):
                                       _detail_prompt_for(min_clips, max_clips),
                                       gemini_worker.DetailResponse, "shorts", costs, "detail")
 
-        # The floor lived only in the prompt, and a prompt is not a contract:
-        # the model regularly returned half of it and the job shipped that.
-        # The windows it passed over are the cheap second chance — they are
-        # already the best-scoring ones in the video — so they get one more
-        # call for the missing clips. It may still come back empty, which is
-        # the honest answer for material that does not hold more.
-        if len(shorts) < min_clips:
-            used = {str(s.get("source_window_id") or "") for s in shorts}
-            spare = [w for w in shortlist if w["id"] not in used]
-            if spare:
-                missing = min_clips - len(shorts)
-                print(f"   Detail returned {len(shorts)} clip(s) of {min_clips}; "
-                      f"asking the {len(spare)} unused window(s) for {missing} more.")
-                extra = _run_stage_split(
-                    client, model_name, spare,
-                    _detail_prompt_for(missing, max(missing, len(spare))),
-                    gemini_worker.DetailResponse, "shorts", costs, "detail-floor")
-                if extra:
-                    shorts = sorted(shorts + extra,
-                                    key=lambda s: float(s.get("start") or 0))
-                    print(f"   Recovered {len(extra)} clip(s) from them.")
-
         if len(shorts) > max_clips:
             # By score, never by position: the results arrive in transcript
             # order, so slicing kept the earliest clips and silently dropped
@@ -2254,8 +2240,7 @@ def get_viral_clips(transcript_result, video_duration, viewer_clips=None):
             print(f"\U0001f4b0 Total cost ({model_name}, 2-pass, {len(costs)} calls): ${cost_analysis['total_cost']:.6f}")
 
         if not shorts:
-            print("⚠️ 2-pass returned no clips.")
-            return None
+            print("⚠️ 2-pass returned no clips worth selecting.")
 
         result = {"shorts": shorts}
         if cost_analysis:
@@ -2415,14 +2400,13 @@ def get_visual_clips(video_path, video_duration, language="en", viewer_clips=Non
     client = genai.Client(api_key=api_key)
     model_name = os.environ.get("GEMINI_MODEL") or 'gemini-3.1-flash-lite'
 
-    # The vision path has no scoring windows to derive a count from, so the
-    # env targets (user request) apply directly over the classic 3-15.
+    # A ceiling only: silent footage may also contain no worthwhile moments.
     def _env_int(name, default):
         try:
             return max(1, int(os.environ.get(name, "")))
         except ValueError:
             return default
-    v_min_clips = _env_int("CLIP_TARGET_MIN", 3)
+    v_min_clips = 0
     v_max_clips = max(v_min_clips, _env_int("CLIP_TARGET_MAX", 15))
     v_min_secs, v_max_secs = clip_duration_bounds()
 
@@ -2434,6 +2418,8 @@ def get_visual_clips(video_path, video_duration, language="en", viewer_clips=Non
                                        language, v_min_clips, v_max_clips,
                                        v_min_secs, v_max_secs,
                                        hint=_viewer_hint(viewer_clips, 0.0, float(video_duration)))
+            if clean is None:
+                return None  # Provider failure is not an editorial empty result.
             costs = [cost]
         else:
             covered = segments[-1][1]
@@ -2442,7 +2428,7 @@ def get_visual_clips(video_path, video_duration, language="en", viewer_clips=Non
                   + (f" (only the first {covered / 60:.0f} of "
                      f"{video_duration / 60:.0f} min; VISION_MAX_SEGMENTS)"
                      if covered < float(video_duration) - 1 else ""))
-            per_min = max(1, math.ceil(v_min_clips / len(segments)))
+            per_min = 0
             clean, costs = [], []
             tmp_dir = os.path.join(os.path.dirname(os.path.abspath(video_path)),
                                    f".vision_{uuid.uuid4().hex[:8]}")
@@ -2475,10 +2461,11 @@ def get_visual_clips(video_path, video_duration, language="en", viewer_clips=Non
                 shutil.rmtree(tmp_dir, ignore_errors=True)
             clean.sort(key=lambda c: c["start"])
             clean = trim_to_best(dedupe_overlapping(clean), v_max_clips)
+            if not costs:
+                return None
 
         if not clean:
-            print("⚠️ Vision pass returned no usable clips.")
-            return None
+            print("⚠️ Vision pass returned no moments worth selecting.")
         cost = _sum_costs(costs, model_name)
         if cost:
             print(f"💰 Vision cost ({model_name}): ${cost.get('total_cost', 0):.6f}")
@@ -2792,6 +2779,18 @@ if __name__ == '__main__':
                                source_subtitle_band=source_subtitle_band)
                 print("CLIPFAC_ANALYSIS_READY", flush=True)
                 sys.exit(0)
+
+            if not _clipfac_render_contract and os.environ.get("CLIPFAC_STYLE"):
+                from clipfac.editorial import review_candidates
+                brief = json.loads(os.environ.get("CLIPFAC_EDITORIAL_BRIEF") or "{}")
+                reviewed = review_candidates(input_video, transcript, duration, clips_data['shorts'],
+                                             os.environ["CLIPFAC_STYLE"], brief.get("campaign"))
+                clips_data['editorial_held'] = [c for c in reviewed if c['editorial_review']['status'] != 'passed']
+                clips_data['shorts'] = [c for c in reviewed if c['editorial_review']['status'] == 'passed']
+                write_json_atomic(os.path.join(output_dir, "clipfac-editorial-review.json"),
+                                  {"candidates": reviewed}, indent=2)
+                if not clips_data['shorts']:
+                    raise RuntimeError("No candidates passed editorial review; inspect clipfac-editorial-review.json")
 
             # Save metadata. Silent videos have no transcript → no subtitles,
             # which is correct (there's no speech to caption).

@@ -1,0 +1,9 @@
+{
+  "purpose": "Human regression cases from the three supplied PUBG exports; not source-time annotations or automated ground truth",
+  "cases": [
+    {"export": "clip_01", "duration_seconds": 24.5, "observed": "Opening landing, looting and inventory before gameplay", "required": "A complete event or standalone spoken story earns selection; routine setup alone is held"},
+    {"export": "clip_03", "duration_seconds": 48.25, "observed": "Layout switches from overview to enlarged inventory avatar", "required": "One stable gaming composition; no avatar tracking; HUD overview retained"},
+    {"export": "clip_07", "duration_seconds": 45.617, "observed": "Travel/map-heavy samples; final sampled caption HOW'S", "required": "Check complete spoken ending and payoff; reject or recut unresolved moments"}
+  ],
+  "limitations": ["Original source intervals unknown", "Audio not reviewed", "Uploaded exports are not committed to the repository", "Regenerate from original source before claiming quality improvement"]
+}

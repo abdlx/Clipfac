@@ -19,6 +19,9 @@ def shortlist(clips, request, transcript_texts=None):
     ranges = []
     for index, clip in ranked:
         reasons = []
+        review = clip.get("editorial_review")
+        if review is not None and review.get("status") != "passed":
+            reasons.extend(review.get("reasons") or ["editorial_review_required"])
         try:
             start, end = float(clip["start"]), float(clip["end"])
             if not math.isfinite(start + end) or start < 0 or end <= start:
@@ -55,7 +58,7 @@ def shortlist(clips, request, transcript_texts=None):
                              "technical_review": "pending", "editorial_review": "pending"})
             ranges.append((start, end))
     return {"accepted": accepted, "held": held, "score_notice": "Model scores are estimates, not guaranteed reach.",
-            "review_notice": "Shortlist approval checks duration, overlap and literal transcript phrases only. Inspect media and review editorial quality before publishing."}
+            "review_notice": "Shortlist checks duration, overlap, literal transcript phrases and available editorial review. Sampled-frame model reviews are estimates; inspect final media before publishing."}
 
 
 def inspect_media(path):

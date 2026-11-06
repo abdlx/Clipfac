@@ -39,7 +39,7 @@ def test_campaign_and_presets_are_isolated(monkeypatch):
     assert original["uppercase"] is True
     changed = get_preset("gaming")
     changed["caption"]["font_size"] = 999
-    assert get_preset("gaming")["caption"]["font_size"] == 40
+    assert get_preset("gaming")["caption"]["font_size"] == 30
     import subtitles
     monkeypatch.setenv("CLIPFAC_STYLE", "fitness")
     assert subtitles.automatic_caption_style()["highlight_color"] == "#FFB86B"
@@ -197,7 +197,7 @@ def test_submission_is_never_duplicated(tmp_path, monkeypatch, interrupted):
     assert again.json()["replayed"] is True
     assert len(submitted) == 1
     assert submitted[0]["clipfac_style"] == "gaming"
-    assert submitted[0]["layouts"] == ["screencast"]
+    assert submitted[0]["layouts"] == []
     assert "target_clips" not in submitted[0]
     if interrupted:
         assert again.json()["state"] == "uncertain"
