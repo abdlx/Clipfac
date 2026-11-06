@@ -28,14 +28,44 @@ def lookup_model_prices(model_name):
 
 
 def clip_count_targets(n_windows):
-    """An output ceiling, never a quota. Zero is a valid editorial result."""
+    """How many clips to ask the detail pass for, given the shortlist size.
+
+    Volume first: more clips shipped means more chances one of them lands,
+    and the audience decides what is viral — no model gate can know in
+    advance. Measured on prod 3-ago-2026: 408 of 429 jobs (95%) delivered 3
+    clips or fewer, the mode being ONE, while the prompt was free to return
+    one per shortlisted window. Users who received 1-3 clips came back a
+    second day 0.4% of the time; those who received 4-9 came back 16.1% —
+    so the clip count, not the clip quality, is what the retention curve
+    hangs on.
+
+    The floor is enforced by a second detail call over unused windows when
+    the first pass comes back short (see get_viral_clips), not by the
+    prompt alone. ``CLIP_TARGET_MIN`` / ``CLIP_TARGET_MAX`` override both
+    for A/B runs without a deploy.
+    """
     import os
-    high = min(12, max(4, max(1, int(n_windows or 1)) * 2))
-    try:
-        high = max(1, min(60, int(os.environ.get("CLIP_TARGET_MAX", high))))
-    except ValueError:
-        pass
-    return 0, high
+
+    n = max(1, int(n_windows or 1))
+    # Floor grows with the material: 3 windows -> 3, 5 -> 4, 10+ -> 6.
+    low = max(2, min(6, n // 2 + 2))
+    # Ceiling allows a rich window to yield more than one without inviting padding.
+    high = min(20, max(4, n * 2))
+    low = min(low, high)
+
+    def _override(name, current):
+        raw = os.environ.get(name)
+        if not raw:
+            return current
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            return current
+
+    low = _override("CLIP_TARGET_MIN", low)
+    high = _override("CLIP_TARGET_MAX", high)
+    low = min(low, high)
+    return low, high
 
 
 def shortlist_target(video_duration):
@@ -49,7 +79,7 @@ def shortlist_target(video_duration):
         seconds = float(video_duration or 0)
     except (TypeError, ValueError):
         seconds = 0.0
-    default = max(3, min(10, int(seconds // 90) + 2))
+    default = max(3, min(15, int(seconds // 90) + 2))
     # Clipfac long-source analysis can inspect more than the legacy ten windows.
     # This is a ceiling on shortlisted windows, never a quota on output clips.
     import os

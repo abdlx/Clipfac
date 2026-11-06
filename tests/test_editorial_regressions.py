@@ -34,8 +34,10 @@ def transcript():
 
 class EditorialRegressions(unittest.TestCase):
     def test_quota_cannot_force_filler(self):
+        # A MIN above the MAX cannot force filler beyond the ceiling: the
+        # ceiling is the binding constraint, the floor is capped to it.
         with patch.dict(os.environ, {'CLIP_TARGET_MIN': '50', 'CLIP_TARGET_MAX': '4'}):
-            self.assertEqual(clip_count_targets(10), (0, 4))
+            self.assertEqual(clip_count_targets(10), (4, 4))
 
     def test_expands_hows_to_completed_question(self):
         start, end, issues = sentence_aligned_span(2.2, 20, transcript(), 30, 15, 25)
@@ -43,7 +45,7 @@ class EditorialRegressions(unittest.TestCase):
         self.assertGreaterEqual(end, 22)
         self.assertLess(start, 2.2)
 
-    def test_no_room_for_payoff_means_hold_not_truncate(self):
+    def test_no_room_for_payoff_is_flagged_not_truncated(self):
         _, _, issues = sentence_aligned_span(2.2, 20, transcript(), 30, 15, 18)
         self.assertIn('complete_sentence_outside_duration_band', issues)
 
@@ -55,14 +57,14 @@ class EditorialRegressions(unittest.TestCase):
     def test_missing_word_alignment_is_not_fabricated(self):
         self.assertEqual(sentence_aligned_span(2, 20, {}, 30), (2, 20, []))
 
-    def test_weak_inventory_or_travel_is_held(self):
+    def test_weak_inventory_or_travel_is_flagged(self):
         verdict = MomentReview(decision='reject', confidence=.95, setup='Routine driving',
             payoff='', hook='', complete_start=False, complete_end=False,
             dead_time_dominates=True, reason='Inventory and travel without payoff')
         self.assertIn('dead_time_dominates', review_reasons(verdict))
         self.assertIn('missing_setup_or_payoff', review_reasons(verdict))
 
-    def test_model_uncertainty_never_passes(self):
+    def test_model_uncertainty_is_flagged(self):
         verdict = MomentReview(decision='accept', confidence=.5, setup='Setup', payoff='Payoff',
             hook='Observed moment', complete_start=True, complete_end=True,
             dead_time_dominates=False, reason='Limited evidence')
@@ -90,6 +92,25 @@ class EditorialRegressions(unittest.TestCase):
         self.assertEqual(result['viral_hook_text'], 'A narrow escape')
         self.assertEqual(len(result['editorial_review']['sample_timestamps']), 6)
 
+    def test_weak_verdict_is_flagged_but_still_ships(self):
+        # Volume first: a reject verdict, low confidence, missing setup/payoff
+        # and dead time are warnings, not a hold. The clip ships and the
+        # shortlist accepts it; the audience decides what is viral.
+        verdict = MomentReview(decision='reject', confidence=.5, setup='',
+            payoff='', hook='Routine drive', complete_start=False,
+            complete_end=False, dead_time_dominates=True, reason='Weak moment')
+        with patch('clipfac.editorial.candidate_frames', return_value=([b'jpg']*6, [0, .8, 5, 10, 15, 19.85])), \
+             patch('clipfac.director.generate_json', return_value=(verdict, {'cost_usd': None})):
+            result = review_candidates('unused', {}, 30,
+                                       [{'start': 0, 'end': 20, 'predicted_score': 85}], 'gaming')[0]
+        self.assertEqual(result['editorial_review']['status'], 'passed')
+        self.assertIn('editorial_reject', result['editorial_review']['warnings'])
+        self.assertIn('editorial_low_confidence', result['editorial_review']['warnings'])
+        self.assertIn('dead_time_dominates', result['editorial_review']['warnings'])
+        self.assertEqual(result['viral_hook_text'], 'Routine drive')
+        request = ProductionRequest(source_url='https://example.com/video', confirm_rights=True)
+        self.assertEqual(len(shortlist([result], request)['accepted']), 1)
+
     def test_provider_outage_stops_repeated_calls(self):
         with patch('clipfac.editorial.candidate_frames', return_value=([b'jpg']*6, [0, 1, 5, 10, 15, 19])), \
              patch('clipfac.director.generate_json', side_effect=RuntimeError('offline')) as provider:
@@ -103,7 +124,10 @@ class EditorialRegressions(unittest.TestCase):
         self.assertNotIn('vstack', graph)
         self.assertIn('force_original_aspect_ratio=decrease', graph)
 
-    def test_selector_empty_result_does_not_trigger_filler_retry(self):
+    def test_empty_detail_retries_once_then_returns_empty(self):
+        # Volume first: an empty detail pass gets ONE second chance over the
+        # unused windows (the floor retry). If that also comes back empty,
+        # the honest answer is still zero clips — nothing is invented.
         from types import SimpleNamespace
         import clip_selection
         source_tree = ast.parse(Path('main.py').read_text())
@@ -129,7 +153,7 @@ class EditorialRegressions(unittest.TestCase):
         exec(compile(ast.Module(body=[node], type_ignores=[]), 'main.py', 'exec'), ns)
         result = ns['get_viral_clips']({'segments': [{'start': 0, 'end': 30, 'text': 'Routine travel'}]}, 30)
         self.assertEqual(result['shorts'], [])
-        self.assertEqual(calls, ['score', 'detail'])
+        self.assertEqual(calls, ['score', 'detail', 'detail-floor'])
 
     def test_no_blur_or_face_tracking_in_gaming_composition(self):
         graph = filtergraph(1920, 1080)

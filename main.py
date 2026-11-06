@@ -2205,6 +2205,28 @@ def get_viral_clips(transcript_result, video_duration, viewer_clips=None):
                                       _detail_prompt_for(min_clips, max_clips),
                                       gemini_worker.DetailResponse, "shorts", costs, "detail")
 
+        # The floor lives only in the prompt, and a prompt is not a contract:
+        # the model regularly returned half of it and the job shipped that.
+        # The windows it passed over are the cheap second chance — they are
+        # already the best-scoring ones in the video — so they get one more
+        # call for the missing clips. It may still come back empty, which is
+        # the honest answer for material that does not hold more.
+        if len(shorts) < min_clips:
+            used = {str(s.get("source_window_id") or "") for s in shorts}
+            spare = [w for w in shortlist if w["id"] not in used]
+            if spare:
+                missing = min_clips - len(shorts)
+                print(f"   Detail returned {len(shorts)} clip(s) of {min_clips}; "
+                      f"asking the {len(spare)} unused window(s) for {missing} more.")
+                extra = _run_stage_split(
+                    client, model_name, spare,
+                    _detail_prompt_for(missing, max(missing, len(spare))),
+                    gemini_worker.DetailResponse, "shorts", costs, "detail-floor")
+                if extra:
+                    shorts = sorted(shorts + extra,
+                                    key=lambda s: float(s.get("start") or 0))
+                    print(f"   Recovered {len(extra)} clip(s) from them.")
+
         if len(shorts) > max_clips:
             # By score, never by position: the results arrive in transcript
             # order, so slicing kept the earliest clips and silently dropped
@@ -2400,13 +2422,14 @@ def get_visual_clips(video_path, video_duration, language="en", viewer_clips=Non
     client = genai.Client(api_key=api_key)
     model_name = os.environ.get("GEMINI_MODEL") or 'gemini-3.1-flash-lite'
 
-    # A ceiling only: silent footage may also contain no worthwhile moments.
+    # The vision path has no scoring windows to derive a count from, so the
+    # env targets (user request) apply directly over the classic 3-15.
     def _env_int(name, default):
         try:
             return max(1, int(os.environ.get(name, "")))
         except ValueError:
             return default
-    v_min_clips = 0
+    v_min_clips = _env_int("CLIP_TARGET_MIN", 3)
     v_max_clips = max(v_min_clips, _env_int("CLIP_TARGET_MAX", 15))
     v_min_secs, v_max_secs = clip_duration_bounds()
 
@@ -2428,7 +2451,7 @@ def get_visual_clips(video_path, video_duration, language="en", viewer_clips=Non
                   + (f" (only the first {covered / 60:.0f} of "
                      f"{video_duration / 60:.0f} min; VISION_MAX_SEGMENTS)"
                      if covered < float(video_duration) - 1 else ""))
-            per_min = 0
+            per_min = max(1, math.ceil(v_min_clips / len(segments)))
             clean, costs = [], []
             tmp_dir = os.path.join(os.path.dirname(os.path.abspath(video_path)),
                                    f".vision_{uuid.uuid4().hex[:8]}")

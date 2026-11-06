@@ -111,13 +111,17 @@ class TestCompactWords:
 
 
 class TestClipCountTargets:
-    """Clip counts are ceilings; weak footage is allowed to yield no clips."""
+    """The floor is the whole point: prod was delivering a single clip on the
+    mode, and users who got 1-3 came back 0.4% of the time against 16% for 4-9.
+    Volume first — more clips shipped means more chances one of them lands.
+    """
 
-    def test_no_output_quota(self):
-        for n in (1, 4, 5, 6, 8, 10):
+    def test_floor_clears_the_dead_zone_once_there_is_material(self):
+        # 4+ shortlisted windows must not be allowed to return the 1-3 band.
+        for n in (4, 5, 6, 8, 10):
             low, high = clip_count_targets(n)
-            assert low == 0
-            assert high >= 1
+            assert low >= 4, f"{n} windows asked for only {low}"
+            assert high >= low
 
     def test_tiny_shortlists_stay_modest(self):
         assert clip_count_targets(1)[0] <= 2
@@ -125,7 +129,7 @@ class TestClipCountTargets:
 
     def test_ceiling_is_capped_so_long_videos_do_not_explode(self):
         assert clip_count_targets(40) == clip_count_targets(12)
-        assert clip_count_targets(40)[1] <= 12
+        assert clip_count_targets(40)[1] <= 20
 
     def test_low_never_exceeds_high(self):
         for n in range(1, 40):
@@ -133,13 +137,13 @@ class TestClipCountTargets:
             assert low <= high
 
     def test_degenerate_input_does_not_crash(self):
-        assert clip_count_targets(0)[0] == 0
-        assert clip_count_targets(None)[0] == 0
+        assert clip_count_targets(0)[0] >= 1
+        assert clip_count_targets(None)[0] >= 1
 
     def test_env_overrides_for_ab_runs(self, monkeypatch):
         monkeypatch.setenv("CLIP_TARGET_MIN", "1")
         monkeypatch.setenv("CLIP_TARGET_MAX", "2")
-        assert clip_count_targets(5) == (0, 2)
+        assert clip_count_targets(5) == (1, 2)
 
     def test_garbage_env_falls_back_to_computed(self, monkeypatch):
         baseline = clip_count_targets(5)
@@ -160,7 +164,7 @@ class TestDetailPromptCarriesTheCount:
         prompt = gw.DETAIL_PROMPT_TEMPLATE.format(
             video_duration=300, language="es", min_clips=low, max_clips=high,
             min_secs=15.0, max_secs=60.0, windows_json="[]")
-        assert f"return zero to {high} clips" in prompt
+        assert f"return {low} to {high} clips" in prompt
         assert "15 to 60 seconds" in prompt
         # The JSON schema example legitimately keeps braces (they are {{ }} in
         # the template), so assert on unsubstituted placeholders specifically.
@@ -300,8 +304,8 @@ class TestShortlistTarget:
     def test_scales_with_duration_and_is_capped(self):
         assert shortlist_target(60) == 3          # floor
         assert shortlist_target(9 * 60) == 8      # the measured job
-        assert shortlist_target(60 * 60) == 10    # ceiling
-        assert shortlist_target(3 * 60 * 60) == 10
+        assert shortlist_target(60 * 60) == 15    # ceiling
+        assert shortlist_target(3 * 60 * 60) == 15
 
     def test_degenerate_input_does_not_crash(self):
         assert shortlist_target(None) == 3

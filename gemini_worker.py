@@ -69,9 +69,11 @@ class VisualResponse(BaseModel):
 
 VISUAL_PROMPT_TEMPLATE = """
 You are a senior short-form video editor. This video has NO speech/audio — judge
-it purely by what you SEE. Watch the whole thing and pick zero to {max_clips} genuinely engaging
-visual moments for TikTok / Reels / Shorts (action, reveals, transformations,
-striking or funny shots, satisfying payoffs, dramatic movement).
+it purely by what you SEE. Watch the whole thing and pick {min_clips} to {max_clips} visual moments
+for TikTok / Reels / Shorts (action, reveals, transformations,
+striking or funny shots, satisfying payoffs, dramatic movement). Include
+borderline moments with an honest lower score rather than skipping them;
+return [] only if the footage has nothing happening at all.
 
 TIME CONTRACT — STRICT:
 - Timestamps in ABSOLUTE SECONDS from the start (usable with ffmpeg -ss/-to).
@@ -302,7 +304,9 @@ CLIP RULES:
 - Each clip must be {min_secs:g} to {max_secs:g} seconds long, in absolute seconds from the start of the source video.
 - Stay within the candidate window boundaries.
 - THE 2-SECOND RULE: the clip MUST open on its strongest moment. If the first
-  2 seconds would not stop a cold viewer from scrolling, move the start or skip the clip.
+  2 seconds would not stop a cold viewer from scrolling, move the start to the
+  strongest moment — never drop the clip for a weak opening; a weak opening
+  with a strong payoff still ships with an honest lower score.
 - Start slightly before the hook and end slightly after the payoff when possible.
 - When a window has `viewer_moments` ([start, end] stretches the stream's
   viewers clipped), the best clip of that window should cover the strongest
@@ -311,16 +315,22 @@ CLIP RULES:
 - No generic intros/outros unless they are the hook.
 - STANDS ALONE: the clip must make sense to someone who has seen nothing else.
   If it opens on a pronoun, a "that", a "so anyway", or an answer whose question
-  was asked earlier, move the start back to where the idea begins or skip it.
-  A brilliant moment that needs the previous five minutes is not a clip.
+  was asked earlier, move the start back to where the idea begins. A brilliant
+  moment that needs the previous five minutes is still a clip if the start can
+  be moved back far enough — only leave it out when no start inside the window
+  makes it stand alone.
   Fix this by moving the START earlier, never by cutting the ending short: a
   clip that loses its payoff to gain context has traded down.
-- HOW MANY: return zero to {max_clips} clips. This is a ceiling, never a quota.
-  Inspect every candidate window but return [] if none deserves publication.
-  Never include filler to satisfy a minimum count.
-- GAMING: routine inventory, maps, looting, healing and travel are not highlights.
-  Require a complete event/reaction or a compelling standalone spoken story.
-  A transcript alone cannot prove gameplay action; do not invent it.
+- HOW MANY: return {min_clips} to {max_clips} clips. This is a target band:
+  aim for at least {min_clips}. Include borderline moments with an honest
+  lower predicted_score rather than skipping them — the editor ships weak and
+  strong alike and the audience decides what is viral. Return [] only if a
+  window has no speech, no event and nothing happening at all.
+- GAMING: routine inventory, maps, looting, healing and travel are weaker
+  moments, not non-moments: keep them when they carry a spoken story or a
+  visible event, with a lower predicted_score. Prefer a complete event/reaction
+  or a compelling standalone spoken story. A transcript alone cannot prove
+  gameplay action; do not invent it.
 - DIVERSITY: never return two clips that make the same point, tell the same
   story, or land the same joke — even across different windows. Pick the
   stronger one and drop the other. Two clips on the same broad topic are fine

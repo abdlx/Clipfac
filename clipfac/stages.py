@@ -81,9 +81,10 @@ def analyze_source(path, transcript, duration, candidates, output_dir, brief, re
     reviewed = review_candidates(path, transcript, duration, candidates.get("shorts", []),
                                  profile["style"], brief.get("campaign"))
     if profile.get("fallback") and requested_style == "auto":
+        # Direction failed, but the candidates still ship: flag it as a
+        # warning on each review instead of holding the whole batch.
         for item in reviewed:
-            item["editorial_review"]["status"] = "held"
-            item["editorial_review"].setdefault("reasons", []).append("automatic_direction_unavailable")
+            item["editorial_review"].setdefault("warnings", []).append("automatic_direction_unavailable")
     data = {
         "schema_version": 1,
         "source": {"filename": Path(path).name, "sha256": source_hash(path),
