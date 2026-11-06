@@ -690,15 +690,12 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
         }
     };
 
-    // Managed (cloud plan/trial) users post with the server-side key — no BYOK needed
-    const canPost = isManaged || (uploadPostKey && uploadUserId);
+    // The key + profile resolve server-side from the saved workspace
+    // connection; the browser values below are only ever overrides. Publish
+    // is always attemptable — if nothing is connected the server says so.
+    const canPost = true;
 
     const handlePost = async () => {
-        if (!canPost) {
-            setPostResult({ success: false, msg: "Missing API Key or User ID." });
-            return;
-        }
-
         if (noAccountsConnected) {
             setPostResult({ success: false, msg: "Connect a social account first." });
             return;
@@ -722,8 +719,10 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
             const payload = {
                 job_id: jobId,
                 clip_index: index,
-                api_key: uploadPostKey,
-                user_id: uploadUserId,
+                // Sent only when the browser has them (override); otherwise the
+                // server resolves the key + profile from the saved connection.
+                ...(uploadPostKey ? { api_key: uploadPostKey } : {}),
+                ...(uploadUserId ? { user_id: uploadUserId } : {}),
                 platforms: selectedPlatforms,
                 title: postTitle,
                 description: postDescription
@@ -1106,13 +1105,6 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     )
                 }
             >
-                {!canPost && (
-                    <div className="mb-4 px-3 py-2 rounded-input text-xs text-warn bg-[color-mix(in_oklab,var(--color-warn)_10%,transparent)] flex items-start gap-2">
-                        <AlertCircle size={14} className="mt-0.5 shrink-0" />
-                        <div className="lowercase">configure api key in settings first.</div>
-                    </div>
-                )}
-
                 {noAccountsConnected && (
                     <div className="mb-4 px-3 py-2 rounded-input text-xs text-warn bg-[color-mix(in_oklab,var(--color-warn)_10%,transparent)] flex items-start gap-2">
                         <AlertCircle size={14} className="mt-0.5 shrink-0" />

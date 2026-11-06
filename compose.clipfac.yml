@@ -1,0 +1,42 @@
+services:
+  backend:
+    build:
+      context: .
+      args:
+        GPU: "0"
+    env_file: .env
+    environment:
+      BILLING_ENABLED: "0"
+      CLIPFAC_REQUIRE_AUTH: "1"
+      CLIPFAC_REQUIRE_REVIEW: "1"
+      CLIPFAC_DB_PATH: /app/data/clipfac.sqlite3
+      MAX_CONCURRENT_JOBS: "1"
+      CLIP_WORKERS: "1"
+      FFMPEG_THREADS: "2"
+      WHISPER_DEVICE: cpu
+      WHISPER_COMPUTE: int8
+    volumes:
+      - clipfac-output:/app/output
+      - clipfac-uploads:/app/uploads
+      - clipfac-data:/app/data
+      - clipfac-models:/app/.cache/huggingface
+    restart: unless-stopped
+    stop_grace_period: 15m
+    command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000",
+              "--proxy-headers", "--forwarded-allow-ips", "172.16.0.0/12",
+              "--timeout-graceful-shutdown", "15"]
+  frontend:
+    build:
+      context: ./dashboard
+      target: prod
+    ports:
+      - "127.0.0.1:8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  clipfac-output:
+  clipfac-uploads:
+  clipfac-data:
+  clipfac-models:

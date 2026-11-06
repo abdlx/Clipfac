@@ -1,0 +1,23 @@
+[
+  {
+    "name": "podcast",
+    "source_url": "https://example.com/replace-with-authorized-podcast.mp4",
+    "confirm_rights": true,
+    "style": "auto",
+    "expected_style": "podcast"
+  },
+  {
+    "name": "gaming",
+    "source_url": "https://example.com/replace-with-authorized-gameplay.mp4",
+    "confirm_rights": true,
+    "style": "auto",
+    "expected_style": "gaming"
+  },
+  {
+    "name": "education",
+    "source_url": "https://example.com/replace-with-authorized-tutorial.mp4",
+    "confirm_rights": true,
+    "style": "auto",
+    "expected_style": "education"
+  }
+]

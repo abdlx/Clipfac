@@ -28,44 +28,14 @@ def lookup_model_prices(model_name):
 
 
 def clip_count_targets(n_windows):
-    """How many clips to ask the detail pass for, given the shortlist size.
-
-    Measured on prod 3-ago-2026: 408 of 429 jobs (95%) delivered 3 clips or
-    fewer, the mode being ONE, while the prompt was free to return one per
-    shortlisted window. Users who received 1-3 clips came back a second day
-    0.4% of the time; those who received 4-9 came back 16.1% — so the clip
-    count, not the clip quality, is what the retention curve hangs on.
-
-    The old prompt biased hard the other way ("prefer one great clip per
-    candidate window") and handed the model two unbounded licences to drop
-    clips (the 2-second rule and STANDS ALONE both end in "or skip it"), with
-    no floor to stop it collapsing to a single clip. This puts a floor and a
-    realistic ceiling on it instead.
-
-    ``CLIP_TARGET_MIN`` / ``CLIP_TARGET_MAX`` override both for A/B runs
-    without a deploy (the reframe-testing harness drives them).
-    """
+    """An output ceiling, never a quota. Zero is a valid editorial result."""
     import os
-
-    n = max(1, int(n_windows or 1))
-    # Floor grows with the material: 3 windows -> 3, 5 -> 4, 10+ -> 6.
-    low = max(2, min(6, n // 2 + 2))
-    # Ceiling allows a rich window to yield more than one without inviting padding.
-    high = min(12, max(4, n * 2))
-    low = min(low, high)
-
-    def _override(name, current):
-        raw = os.environ.get(name)
-        if not raw:
-            return current
-        try:
-            return max(1, int(raw))
-        except ValueError:
-            return current
-
-    low = _override("CLIP_TARGET_MIN", low)
-    high = _override("CLIP_TARGET_MAX", high)
-    return low, max(low, high)
+    high = min(12, max(4, max(1, int(n_windows or 1)) * 2))
+    try:
+        high = max(1, min(60, int(os.environ.get("CLIP_TARGET_MAX", high))))
+    except ValueError:
+        pass
+    return 0, high
 
 
 def shortlist_target(video_duration):
@@ -79,7 +49,15 @@ def shortlist_target(video_duration):
         seconds = float(video_duration or 0)
     except (TypeError, ValueError):
         seconds = 0.0
-    return max(3, min(10, int(seconds // 90) + 2))
+    default = max(3, min(10, int(seconds // 90) + 2))
+    # Clipfac long-source analysis can inspect more than the legacy ten windows.
+    # This is a ceiling on shortlisted windows, never a quota on output clips.
+    import os
+    try:
+        requested = min(60, max(1, int(os.environ.get("CLIPFAC_CANDIDATE_LIMIT", "15"))))
+    except ValueError:
+        requested = 15
+    return max(default, requested) if requested > 15 else default
 
 
 def score_batches(windows, batch_size):
@@ -388,3 +366,52 @@ def snap_clip_to_words(start, end, words, video_duration,
     if new_end <= new_start or new_end - new_start < min_duration:
         return original
     return (round(new_start, 3), round(new_end, 3))
+
+
+
+def sentence_aligned_span(start, end, transcript, duration, min_seconds=15, max_seconds=60,
+                          search_seconds=5):
+    """Expand to a nearby sentence/pause without truncating a selected payoff.
+
+    Returns (start, end, issues). No word timing means no automatic correction;
+    a separate editorial review must establish coherence from segment context.
+    Punctuation and pauses are boundary evidence, not a semantic guarantee.
+    """
+    import re
+    words = []
+    for segment in (transcript or {}).get('segments', []):
+        for word in segment.get('words', []):
+            try:
+                s, e = float(word['start']), float(word['end'])
+                if math.isfinite(s+e) and 0 <= s < e <= duration:
+                    words.append((s, e, str(word.get('word', '')).strip()))
+            except (KeyError, ValueError, TypeError):
+                continue
+    words.sort()
+    if not words:
+        return start, end, []
+    terminal = lambda text: bool(re.search(r'[.!?。！？]["\'”’)]*$', text))
+    starts, ends = [], []
+    for i, (s, e, text) in enumerate(words):
+        prev = words[i-1] if i else None
+        nxt = words[i+1] if i+1 < len(words) else None
+        if prev is None or terminal(prev[2]) or s-prev[1] >= .65:
+            lead = min(.15, max(0, s-(prev[1] if prev else 0))/2)
+            starts.append(max(0, s-lead))
+        if terminal(text) or (nxt and nxt[0]-e >= .65) or (not nxt and duration-e >= .65):
+            tail = min(.2, max(0, (nxt[0] if nxt else duration)-e)/2)
+            ends.append(min(duration, e+tail))
+    # Only expand, apart from small existing silence handles. Do not move the
+    # ending backwards just to fit max_seconds and silently discard the payoff.
+    left = [s for s in starts if start-search_seconds <= s <= start+.2]
+    right = [e for e in ends if end-.2 <= e <= end+search_seconds]
+    pairs = [(s, e) for s in left for e in right if min_seconds <= e-s <= max_seconds]
+    if not pairs:
+        issues = []
+        if not left:
+            issues.append('incomplete_sentence_start')
+        if not right:
+            issues.append('incomplete_sentence_end')
+        return start, end, issues or ['complete_sentence_outside_duration_band']
+    s, e = min(pairs, key=lambda pair: abs(pair[0]-start)+abs(pair[1]-end))
+    return round(s, 3), round(e, 3), []

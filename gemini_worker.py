@@ -69,7 +69,7 @@ class VisualResponse(BaseModel):
 
 VISUAL_PROMPT_TEMPLATE = """
 You are a senior short-form video editor. This video has NO speech/audio — judge
-it purely by what you SEE. Watch the whole thing and pick the {min_clips}–{max_clips} MOST engaging
+it purely by what you SEE. Watch the whole thing and pick zero to {max_clips} genuinely engaging
 visual moments for TikTok / Reels / Shorts (action, reveals, transformations,
 striking or funny shots, satisfying payoffs, dramatic movement).
 
@@ -315,13 +315,12 @@ CLIP RULES:
   A brilliant moment that needs the previous five minutes is not a clip.
   Fix this by moving the START earlier, never by cutting the ending short: a
   clip that loses its payoff to gain context has traded down.
-- HOW MANY: return {min_clips} to {max_clips} clips. Work through EVERY candidate
-  window — they were already scored as the best moments in the video, so a window
-  that yields nothing should be the exception, not the norm. Two or three clips
-  from one window are fine when they are genuinely different moments. The rules
-  above let you skip a weak clip; they are not a licence to return one clip and
-  stop. Only fall short of {min_clips} when the material truly does not hold
-  them, and never pad with a clip you would not publish yourself.
+- HOW MANY: return zero to {max_clips} clips. This is a ceiling, never a quota.
+  Inspect every candidate window but return [] if none deserves publication.
+  Never include filler to satisfy a minimum count.
+- GAMING: routine inventory, maps, looting, healing and travel are not highlights.
+  Require a complete event/reaction or a compelling standalone spoken story.
+  A transcript alone cannot prove gameplay action; do not invent it.
 - DIVERSITY: never return two clips that make the same point, tell the same
   story, or land the same joke — even across different windows. Pick the
   stronger one and drop the other. Two clips on the same broad topic are fine
