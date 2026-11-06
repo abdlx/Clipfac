@@ -263,7 +263,11 @@ const SESSION_MAX_AGE = 86400000; // 24 hours
 // Mock polling function
 const pollJob = async (jobId) => {
   const res = await apiFetch(`/api/status/${jobId}`);
-  if (!res.ok) throw new Error('Status check failed');
+  if (!res.ok) {
+    const err = new Error('Status check failed');
+    err.status = res.status;
+    throw err;
+  }
   return res.json();
 };
 
@@ -848,6 +852,10 @@ function App() {
             }
           }
         } catch (e) {
+          // A 401 means the saved installation token is gone (logged out):
+          // stop polling instead of hammering the API — and the console —
+          // forever. The workspace login is the way back in.
+          if (e?.status === 401) { clearInterval(interval); return; }
           console.error("Polling error", e);
         }
       }, 2000);
@@ -864,6 +872,11 @@ function App() {
       const res = await apiFetch('/api/social/user', {
         headers: uploadPostKey ? { 'X-Upload-Post-Key': uploadPostKey } : {}
       });
+      // 400 is the server's "Upload-Post is not connected" — a normal state
+      // when no key is saved yet, not a failure. Treat it as zero profiles
+      // instead of logging an error: the publish UI already shows the
+      // not-connected state, and a real key problem still surfaces as 401.
+      if (res.status === 400) { setUserProfiles([]); return; }
       if (!res.ok) throw new Error("Failed to fetch");
       const data = await res.json();
       if (data.profiles && data.profiles.length > 0) {

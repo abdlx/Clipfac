@@ -3352,6 +3352,41 @@ async def get_config():
         "localLlm": None if BILLING_ENABLED else llm_backend.describe(),
     }
 
+
+if not BILLING_ENABLED:
+    @app.get("/api/me")
+    async def get_me_self_host():
+        """Self-host identity for the dashboard's AuthContext.
+
+        The hosted /api/me lives in cloud/auth.py and is not mounted on a
+        self-host install, so without this stub every refreshMe() call 404s —
+        and AuthContext treats ANY refreshMe error as a stale token and wipes
+        the saved installation token, silently logging the user out mid-job
+        (the job poller then 401-loops forever). Shape mirrors the hosted
+        payload's fields the dashboard reads (user.id, plan, entitled).
+        """
+        return {
+            "user": {"id": "local", "email": None},
+            "entitled": False,
+            "plan": "free",
+            "status": None,
+            "interval": None,
+            "period_end": None,
+            "cancel_at_period_end": False,
+            "hold_until": None,
+            "hold_scheduled": False,
+            "has_billing_account": False,
+            "minutes": {
+                "plan_allowance": None,
+                "plan_used": 0,
+                "plan_remaining": None,
+                "topup_remaining": 0,
+                "remaining": None,
+            },
+            "upload_post_profile": None,
+            "onboarding_survey_pending": False,
+        }
+
 async def _probe_youtube_quality(url: str) -> dict:
     """Run quality_probe.py in a worker thread; {} on any failure (fail-open)."""
     def _run():

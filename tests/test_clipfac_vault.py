@@ -152,3 +152,24 @@ def test_youtube_cookies_disable_and_delete_clear_env(isolated, monkeypatch):
     assert "YOUTUBE_COOKIES" not in os.environ
     vault.delete("youtube")
     assert os.environ["YOUTUBE_COOKIES"] == "deployment-cookies"
+
+
+def test_endpoint_paths_are_normalized_on_save(isolated):
+    # The google-genai SDK appends /v1beta itself, so a pasted OpenAI-style
+    # path doubles up and every Gemini call 404s. The text/vision callers
+    # POST {base}/chat/completions, so a pasted full path doubles up there
+    # too and clip detection dies with "Unknown API route". Only the
+    # exact appended suffix is stripped; any other subpath is left alone.
+    vault.save("gemini", vault.ProviderUpdate(
+        endpoint="https://omniroute.example/v1/chat/completions", model="m", token="k"))
+    assert os.environ["GOOGLE_GEMINI_BASE_URL"] == "https://omniroute.example"
+    vault.save("gemini", vault.ProviderUpdate(endpoint="https://omniroute.example/v1"))
+    assert os.environ["GOOGLE_GEMINI_BASE_URL"] == "https://omniroute.example"
+    vault.save("gemini", vault.ProviderUpdate(endpoint="https://proxy.example/gemini"))
+    assert os.environ["GOOGLE_GEMINI_BASE_URL"] == "https://proxy.example/gemini"
+    vault.save("text", vault.ProviderUpdate(
+        endpoint="https://provider.example/v1/chat/completions", model="m", token="k"))
+    assert os.environ["LLM_BASE_URL"] == "https://provider.example/v1"
+    vault.save("vision", vault.ProviderUpdate(
+        endpoint="https://provider.example/v1/chat/completions", model="m", token="k"))
+    assert os.environ["CLIPFAC_VISION_BASE_URL"] == "https://provider.example/v1"

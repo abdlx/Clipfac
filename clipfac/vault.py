@@ -141,6 +141,25 @@ def _validate_youtube_cookies(blob):
     return True
 
 
+def _normalize_endpoint(kind, endpoint):
+    """Provider base URLs are stored without the path the caller appends:
+    - gemini: the google-genai SDK appends /v1beta itself, so the card takes
+      an origin only. A pasted .../v1/chat/completions doubles up into
+      .../v1/chat/completions/v1beta/models/... and every Gemini call 404s.
+    - text/vision: the callers POST {base}/chat/completions, so the card
+      takes the base without that suffix (usually .../v1). A pasted full
+      .../v1/chat/completions URL doubles up the same way and clip
+      detection dies with "Unknown API route".
+    Any other path is left alone (a proxy may legitimately serve the API
+    under a subpath)."""
+    base = (endpoint or "").rstrip("/")
+    suffixes = ("/v1/chat/completions", "/v1") if kind == "gemini" else ("/chat/completions",)
+    for suffix in suffixes:
+        if base.endswith(suffix):
+            return base[: -len(suffix)] or base
+    return base
+
+
 def save(kind, update):
     if kind not in MAPPING:
         raise ValueError("Unknown provider kind")
@@ -150,6 +169,7 @@ def save(kind, update):
         setup(db)
         previous = db.execute("SELECT * FROM provider_settings WHERE kind=?", (kind,)).fetchone()
         endpoint = update.endpoint if update.endpoint is not None else (previous["endpoint"] if previous else "")
+        endpoint = _normalize_endpoint(kind, endpoint)
         selected_model = update.profile if kind == "upload_post" and update.profile is not None else update.model
         model = selected_model if selected_model is not None else (previous["model"] if previous else "")
         ciphertext = previous["ciphertext"] if previous else None
