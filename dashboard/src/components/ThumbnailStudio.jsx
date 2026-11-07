@@ -79,11 +79,11 @@ function DragDropZone({ label, accept, onFile, file, onClear, icon }) {
   );
 }
 
-export default function ThumbnailStudio({ geminiApiKey, uploadPostKey, uploadUserId, managed = false, onCreateClips = null }) {
-  // Managed (hosted plan): Gemini runs server-side via the bearer token, no BYOK key.
-  // Only send X-Gemini-Key for self-host BYOK. apiFetch attaches the bearer token.
-  const keyHeader = geminiApiKey ? { 'X-Gemini-Key': geminiApiKey } : {};
-  const needsKey = !geminiApiKey && !managed;
+export default function ThumbnailStudio({ vaultKeys = {}, uploadUserId, managed = false, onCreateClips = null, onOpenSettings }) {
+  // The vault holds the Gemini key; the server injects it on every call,
+  // so no key header is sent here. apiFetch attaches the bearer token.
+  const keyHeader = {};
+  const needsKey = !vaultKeys?.gemini && !managed;
   // Step management
   const [step, setStep] = useState(0);
   const [mode, setMode] = useState(null); // 'video' or 'manual'
@@ -161,7 +161,7 @@ export default function ThumbnailStudio({ geminiApiKey, uploadPostKey, uploadUse
 
   // --- Step 1: Analyze Video ---
   const handleAnalyze = async () => {
-    if (needsKey) return alert('Please set your Gemini API key in Settings first.');
+    if (needsKey) return alert('Save a Gemini key in Settings → Provider connections first.');
     setIsAnalyzing(true);
 
     try {
@@ -273,7 +273,7 @@ export default function ThumbnailStudio({ geminiApiKey, uploadPostKey, uploadUse
 
   // --- Step 3: Generate Thumbnails ---
   const handleGenerate = async () => {
-    if (needsKey) return alert('Please set your Gemini API key in Settings first.');
+    if (needsKey) return alert('Save a Gemini key in Settings → Provider connections first.');
     const finalTitle = selectedTitle || manualTitle;
     if (!finalTitle) return alert('Please select or enter a title first.');
 
@@ -353,7 +353,7 @@ export default function ThumbnailStudio({ geminiApiKey, uploadPostKey, uploadUse
 
   // --- Description Generation ---
   const handleGenerateDescription = async () => {
-    if (needsKey) return alert('Please set your Gemini API key in Settings first.');
+    if (needsKey) return alert('Save a Gemini key in Settings → Provider connections first.');
     const finalTitle = selectedTitle || manualTitle;
     if (!finalTitle) return alert('Please select a title first.');
     if (!sessionId) return alert('No session available.');
@@ -400,7 +400,6 @@ export default function ThumbnailStudio({ geminiApiKey, uploadPostKey, uploadUse
       formData.append('title', finalTitle);
       formData.append('description', description);
       formData.append('thumbnail_url', selectedThumbnail);
-      if (uploadPostKey) formData.append('api_key', uploadPostKey);
       if (uploadUserId) formData.append('user_id', uploadUserId);
 
       // Submit the publish job — returns immediately with a publish_id
@@ -507,7 +506,7 @@ export default function ThumbnailStudio({ geminiApiKey, uploadPostKey, uploadUse
             <AlertCircle size={18} className="text-warn shrink-0 mt-0.5" />
             <div>
               <p className="text-sm font-medium text-warn lowercase">Gemini API Key Required</p>
-              <p className="text-xs text-muted mt-1">YouTube Studio requires a Google Gemini API key to function. Please configure it in the <strong>Settings</strong> tab before using this feature. Gemini's free tier includes 1,500 requests per day.</p>
+              <p className="text-xs text-muted mt-1">YouTube Studio requires a Google Gemini API key to function. Please save one in <button onClick={() => onOpenSettings?.()} className="underline text-ink2">Settings → Provider connections</button> before using this feature. Gemini's free tier includes 1,500 requests per day.</p>
             </div>
           </div>
         )}

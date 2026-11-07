@@ -35,6 +35,11 @@
 @media(max-width:400px){.cf-brand>span{font-size:20px}.cf-brand{gap:7px}.cf-sidebar{padding:12px}.cf-preset-grid,.cf-clip-grid{grid-template-columns:1fr}.cf-heading h1{font-size:28px}}
 @media(prefers-reduced-motion:reduce){.cf-spin{animation:none}}
 
+/* The embedded editor fills the shell's main area (not the padded content column). */
+.cf-editor-wrap{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+@media(max-width:720px){.cf-editor-wrap{min-height:calc(100dvh - 66px - 53px)}}
+@media(max-width:400px){.cf-sidebar .cf-nav{width:34px;height:34px}.cf-brand>span{display:none}}
+
 /* Keep upstream editor typography aligned with the workspace. */
 .font-display{font-weight:550;letter-spacing:-.025em}.btn-primary,.btn-ghost,.btn-quiet,.btn-danger{text-transform:none}
 

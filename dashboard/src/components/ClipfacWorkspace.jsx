@@ -1,15 +1,63 @@
-import { useCallback, useEffect, useState } from 'react'
-import { ArrowUpRight, Check, ChevronRight, Clapperboard, Copy, Film, KeyRound, Loader2, Moon, Plus, RefreshCw, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun, Workflow } from 'lucide-react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
+import { ArrowUpRight, Check, ChevronRight, Clapperboard, Film, Image, KeyRound, LayoutDashboard, LayoutGrid, Loader2, Moon, Plus, RefreshCw, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Sun } from 'lucide-react'
 import { apiJson, setToken as storeSessionToken } from '../lib/api'
 import { getApiUrl } from '../config'
+import SettingsView from './SettingsView.jsx'
+
+// The editor (App.jsx) is lazy-loaded and embedded — the workspace is the
+// one shell, the editor is one of its views, not a second app.
+const Editor = lazy(() => import('../App.jsx'))
+
+const VIEW_TITLES = {
+  productions: 'Projects', styles: 'Style library', clips: 'Clips',
+  shorts: 'AI Shorts', thumbnails: 'Thumbnails', gallery: 'Gallery', settings: 'Settings',
+}
+const HASH_FOR_VIEW = {
+  productions: '#workspace', clips: '#app', shorts: '#app?tab=saasshorts',
+  thumbnails: '#app?tab=thumbnails', gallery: '#app?tab=ugc-gallery', settings: '#app?tab=settings',
+}
+const INITIAL_TAB_FOR_VIEW = {
+  clips: 'dashboard', shorts: 'saasshorts', thumbnails: 'thumbnails', gallery: 'ugc-gallery',
+}
+
+function EditorView({ view, vaultKeys, providersLoaded, error, onNavigateToSettings }) {
+  // Don't mount the editor until the vault state is known: with vaultKeys
+  // still empty it would flash the "keys missing" banner on every load even
+  // when keys are saved. If the providers call failed, show that error here
+  // instead of spinning forever (the workspace error banner lives in the
+  // content column, which editor tabs don't render).
+  if (!providersLoaded) {
+    return (
+      <div className="cf-editor-wrap">
+        {error ? (
+          <div className="cf-content"><div className="cf-error" role="alert">{error}</div></div>
+        ) : (
+          <div className="cf-loading"><Loader2 size={20} className="cf-spin" /></div>
+        )}
+      </div>
+    )
+  }
+  return (
+    <div className="cf-editor-wrap">
+      <Suspense fallback={<div className="cf-loading"><Loader2 size={20} className="cf-spin" /></div>}>
+        <Editor
+          embedded
+          initialTab={INITIAL_TAB_FOR_VIEW[view] || 'dashboard'}
+          vaultKeys={vaultKeys}
+          onNavigateToSettings={onNavigateToSettings}
+        />
+      </Suspense>
+    </div>
+  )
+}
 
 const initial = { source_url: '', style: 'auto', campaign_name: '', platform: 'independent', audience: '', objective: '', notes: '', required: '', forbidden: '', minimum_score: 70, min_seconds: 15, max_seconds: 60, max_clips: 15, confirm_rights: false, captions: true }
 const lines = value => value.split('\n').map(x => x.trim()).filter(Boolean)
 const errorText = error => error.detail || error.message || 'Request failed'
 const requestKey = () => crypto.randomUUID?.() || Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
 
-export default function ClipfacWorkspace() {
-  const [tab, setTab] = useState('productions')
+export default function ClipfacWorkspace({ initialView = 'productions' }) {
+  const [tab, setTab] = useState(initialView)
   const [presets, setPresets] = useState([])
   const [providers, setProviders] = useState([])
   const [form, setForm] = useState(initial)
@@ -22,13 +70,25 @@ export default function ClipfacWorkspace() {
   const [theme, setTheme] = useState(() => { try { return localStorage.getItem('clipfac_theme') || 'light' } catch (_) { return 'light' } })
   const [report, setReport] = useState(null)
   const [inspecting, setInspecting] = useState(null)
-  const [copied, setCopied] = useState(false)
   const [submission, setSubmission] = useState(null)
   const [editPlan, setEditPlan] = useState(null)
   const [planDirty, setPlanDirty] = useState(false)
   const [renderSubmission, setRenderSubmission] = useState(null)
   const [review, setReview] = useState(null)
   const [reviewing, setReviewing] = useState(null)
+
+  // Deep links (main.jsx) drive the view; internal nav pushes the matching
+  // hash so the back button works. The style picker is a sub-view of the
+  // form and has no hash.
+  useEffect(() => { setTab(initialView) }, [initialView])
+  function navigate(view) {
+    setTab(view)
+    setError('')
+    const hash = HASH_FOR_VIEW[view]
+    if (hash && window.location.hash !== hash) {
+      try { window.history.pushState(null, '', hash) } catch (_) { /* ignore */ }
+    }
+  }
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -52,6 +112,13 @@ export default function ClipfacWorkspace() {
 
   useEffect(() => { refresh() }, [refresh])
 
+  // Which provider keys the vault already holds — the editor's key checks
+  // read this instead of asking for browser keys again.
+  const vaultKeys = {
+    gemini: providers.some((p) => p.kind === 'gemini' && p.token_configured),
+    elevenlabs: providers.some((p) => p.kind === 'elevenlabs' && p.token_configured),
+    fal: providers.some((p) => p.kind === 'fal' && p.token_configured),
+  }
   const selectedId = selected?.id
   const running = selected && !['completed', 'failed', 'blocked', 'uncertain', 'unavailable', 'submitted'].includes(selected.state)
   useEffect(() => {
@@ -201,7 +268,6 @@ export default function ClipfacWorkspace() {
     finally { setInspecting(null) }
   }
   const preset = presets.find(item => item.id === form.style)
-  const config = JSON.stringify({ mcpServers: { clipfac: { url: window.location.origin + '/mcp', headers: { Authorization: 'Bearer YOUR_AGENT_TOKEN' } } } }, null, 2)
 
   if (locked) return <div className="cf-lock"><form className="cf-panel cf-unlock" onSubmit={unlock}>
     <img src="/clipfac.svg" alt="" width="48" height="48" />
@@ -217,17 +283,19 @@ export default function ClipfacWorkspace() {
       <a className="cf-brand" href="#workspace"><img src="/clipfac.svg" alt="" /><span>Clipfac<span className="cf-brand-dot">.</span></span></a>
       <div className="cf-workspace-label">YOUR WORKSPACE</div>
       <nav aria-label="Workspace">
-        {[['productions', Film, 'Productions'], ['styles', SlidersHorizontal, 'Style library'], ['agents', Workflow, 'Agent connections'], ['providers', KeyRound, 'Provider connections']].map(([id, Icon, label]) =>
-          <button key={id} aria-current={tab === id ? 'page' : undefined} className={tab === id ? 'cf-nav active' : 'cf-nav'} onClick={() => { setTab(id); setError('') }}><Icon size={18} />{label}{tab === id && <span className="cf-nav-dot" />}</button>)}
+        {[['productions', Film, 'Projects'], ['clips', LayoutDashboard, 'Clips'], ['shorts', Sparkles, 'AI Shorts'], ['thumbnails', Image, 'Thumbnails'], ['gallery', LayoutGrid, 'Gallery'], ['settings', Settings2, 'Settings']].map(([id, Icon, label]) =>
+          <button key={id} aria-current={tab === id ? 'page' : undefined} className={tab === id ? 'cf-nav active' : 'cf-nav'} onClick={() => navigate(id)}><Icon size={18} />{label}{tab === id && <span className="cf-nav-dot" />}</button>)}
       </nav>
       <div className="cf-sidebar-bottom">
         <div className="cf-local"><span /> Self-hosted workspace<small>Your footage. Your providers.</small></div>
-        <a className="cf-nav" href="#app?tab=settings"><Settings2 size={18} />Editor settings<ArrowUpRight size={14} /></a>
         <button className="cf-nav" onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}{theme === 'light' ? 'Dark appearance' : 'Light appearance'}</button>
       </div>
     </aside>
     <main className="cf-main">
-      <header className="cf-topbar"><span>Workspace <ChevronRight size={14} /> <strong>{tab === 'productions' ? 'Productions' : tab === 'styles' ? 'Style library' : tab === 'providers' ? 'Provider connections' : 'Agent connections'}</strong></span><a href="#app">Open editor <ArrowUpRight size={14} /></a></header>
+      <header className="cf-topbar"><span>Workspace <ChevronRight size={14} /> <strong>{VIEW_TITLES[tab] || 'Projects'}</strong></span>{tab === 'styles' && <button className="cf-text-button" onClick={() => navigate('productions')}>← Back to projects</button>}</header>
+      {['clips', 'shorts', 'thumbnails', 'gallery'].includes(tab) ? (
+        <EditorView view={tab} vaultKeys={vaultKeys} providersLoaded={providers.length > 0} error={error} onNavigateToSettings={() => navigate('settings')} />
+      ) : (
       <div className="cf-content">
         {error && <div className="cf-error" role="alert">{error}<button onClick={() => setError('')} aria-label="Dismiss error">×</button></div>}
         {tab === 'productions' && <>
@@ -258,7 +326,7 @@ export default function ClipfacWorkspace() {
             </form>
             <aside className="cf-right-column">
               <div className="cf-style-preview" style={{ '--preview-accent': preset?.accent || '#82B2FF' }}><div className="cf-preview-top"><span>YOUR DIRECTION</span><span>9:16</span></div><div className="cf-preview-frame"><div className="cf-preview-bars"><i /><i /><i /></div><div className="cf-preview-caption">Every moment<br />has <em>a story.</em></div><span className="cf-preview-stamp">TYPOGRAPHY CONCEPT · NOT A VIDEO PREVIEW</span></div><div className="cf-preview-bottom"><strong>{form.style === 'auto' ? 'Automatic direction' : preset?.name || 'Editorial'}</strong><small>{form.style === 'auto' ? 'Chosen after analysis' : 'Version ' + (preset?.version || 1) + ' · ' + (preset?.theme || 'podcast')}</small></div></div>
-              <div className="cf-panel cf-how"><ShieldCheck size={20} /><h3>A considered workflow.</h3><p>Inspect real frames. Pin the source and cut times. Keep every revision. Render the plan you reviewed.</p><button type="button" className="cf-text-button" onClick={() => setTab('providers')}>Connect your providers <ArrowUpRight size={13} /></button></div>
+              <div className="cf-panel cf-how"><ShieldCheck size={20} /><h3>A considered workflow.</h3><p>Inspect real frames. Pin the source and cut times. Keep every revision. Render the plan you reviewed.</p><button type="button" className="cf-text-button" onClick={() => navigate('settings')}>Connect your providers <ArrowUpRight size={13} /></button></div>
             </aside>
           </div>
           <section className="cf-history"><div className="cf-section-heading"><h2>Recent productions <span>{productions.length}</span></h2><button className="cf-text-button" onClick={refresh}><RefreshCw size={14} />Refresh</button></div>
@@ -314,61 +382,10 @@ export default function ClipfacWorkspace() {
             <p className="cf-hint">Rendering reuses the retained source and transcript. No second download or candidate-selection call. Review framing and creative quality on the rendered result.</p>
           </section>}
         </>}
-        {tab === 'styles' && <><div className="cf-heading"><div><p className="cf-kicker">A LOOK WITH INTENTION</p><h1>Find the right feeling.</h1><p>Six versioned directions. Choose based on the footage.</p></div></div><div className="cf-preset-grid">{presets.map(item => <button className="cf-panel cf-preset-card" key={item.id} onClick={() => { update('style', item.id); setTab('productions') }}><div className="cf-mini-preview" style={{ '--preview-accent': item.accent }}><span>{item.theme}</span><strong>Make it<br /><em>mean something.</em></strong><span>TYPOGRAPHY CONCEPT</span></div><div><h2>{item.name} <ArrowUpRight size={16} /></h2><p>{item.description}</p><small>{item.caption.font_name} · {item.caption.font_size}px · v{item.version}</small></div></button>)}</div></>}
-        {tab === 'providers' && <><div className="cf-heading"><div><p className="cf-kicker">BRING YOUR OWN INTELLIGENCE</p><h1>The right model for the job.</h1><p>Configure providers once. Your agents use the same connection.</p></div></div><p className="cf-hint">Saved keys are encrypted locally and never returned. “Configured” does not mean the provider has been tested. Text and vision capabilities are configured separately.</p><div className="cf-provider-grid">{providers.map(item => <ProviderCard key={item.kind + ':' + item.updated} config={item} onSave={saveProvider} onRemove={removeProvider} />)}</div></>}
-        {tab === 'agents' && <><div className="cf-heading"><div><p className="cf-kicker">BUILT TO WORK TOGETHER</p><h1>Your agent. Our workspace.</h1><p>Connect any MCP client to the same production tools.</p></div></div><div className="cf-panel cf-agent-panel"><Workflow size={28} /><h2>One connection. A complete handoff.</h2><p>Give your agent a source, campaign brief and style. It can analyze footage, choose a direction, create or revise exact edit plans, render retained sources, inspect results, and publish with the right scope.</p><div className="cf-label-row"><span>MCP connection example</span><button className="cf-text-button" onClick={async () => { try { await navigator.clipboard.writeText(config); setCopied(true) } catch (_) { setError('Clipboard unavailable; select and copy the configuration below.') } }}>{copied ? <Check size={14} /> : <Copy size={14} />}{copied ? 'Copied' : 'Copy'}</button></div><pre className="cf-code">{config}</pre><p className="cf-hint">Client configuration formats vary. Use a scoped agent token from your server configuration. Give publishing access only to agents that need it.</p><div className="cf-agent-flow"><span>Source + brief</span><ChevronRight size={14} /><span>Produce</span><ChevronRight size={14} /><span>Inspect + review</span><ChevronRight size={14} /><span>Publish</span></div></div></>}
+        {tab === 'styles' && <><div className="cf-heading"><div><p className="cf-kicker">A LOOK WITH INTENTION</p><h1>Find the right feeling.</h1><p>Six versioned directions. Choose based on the footage.</p></div></div><div className="cf-preset-grid">{presets.map(item => <button className="cf-panel cf-preset-card" key={item.id} onClick={() => { update('style', item.id); navigate('productions') }}><div className="cf-mini-preview" style={{ '--preview-accent': item.accent }}><span>{item.theme}</span><strong>Make it<br /><em>mean something.</em></strong><span>TYPOGRAPHY CONCEPT</span></div><div><h2>{item.name} <ArrowUpRight size={16} /></h2><p>{item.description}</p><small>{item.caption.font_name} · {item.caption.font_size}px · v{item.version}</small></div></button>)}</div></>}
+        {tab === 'settings' && <SettingsView providers={providers} onSaveProvider={saveProvider} onRemoveProvider={removeProvider} onError={setError} />}
       </div>
+      )}
     </main>
   </div>
-}
-
-
-
-function ProviderCard({ config, onSave, onRemove }) {
-  const names = {
-    gemini: ['Google Gemini', 'Native text selection and upstream vision/layout stages. Leave the base URL blank to use Google, or point it at your own Gemini-compatible endpoint.'],
-    text: ['Compatible text model', 'Any configured OpenAI-compatible chat endpoint.'],
-    vision: ['Compatible vision model', 'Footage direction and sampled-frame review. Requires image input support.'],
-    upload_post: ['Upload-Post', 'Connected social accounts and publishing.'],
-    elevenlabs: ['ElevenLabs', 'Voice generation and dubbing.'],
-    fal: ['fal.ai', 'Image and video generation in the existing editor.'],
-    youtube: ['YouTube cookies (yt-dlp)', 'Paste your YouTube cookies so video downloads use your signed-in session instead of failing YouTube’s bot checks.'],
-  }
-  const [enabled, setEnabled] = useState(config.enabled)
-  const [endpoint, setEndpoint] = useState(config.endpoint || '')
-  const [model, setModel] = useState(config.model || '')
-  const [token, setToken] = useState('')
-  const [saving, setSaving] = useState(false)
-  const compatible = config.kind === 'text' || config.kind === 'vision'
-  const hasEndpoint = compatible || config.kind === 'gemini'
-  async function save(event) {
-    event.preventDefault()
-    setSaving(true)
-    try {
-      await onSave(config.kind, { enabled, endpoint: hasEndpoint ? endpoint : null,
-        model: compatible || config.kind === 'gemini' ? model : null, profile: config.kind === 'upload_post' ? model : null, token: token.trim() || null })
-      setToken('')
-    } catch (_) { /* parent shows the server error */ }
-    finally { setSaving(false) }
-  }
-  async function remove() {
-    setSaving(true)
-    try { await onRemove(config.kind) }
-    catch (_) { /* parent shows the server error */ }
-    finally { setSaving(false) }
-  }
-  return <form className="cf-panel cf-provider" onSubmit={save}>
-    <div className="cf-section-heading"><h2>{names[config.kind]?.[0] || config.kind}</h2><span className="cf-status">{!config.enabled ? 'Disabled' : config.token_configured || compatible && config.endpoint ? 'Configured' : 'Not configured'}</span></div>
-    <p>{names[config.kind]?.[1]}</p>
-    {hasEndpoint && <label>API base URL<input type="url" required={compatible && enabled} value={endpoint} onChange={e => setEndpoint(e.target.value)} placeholder={config.kind === 'gemini' ? 'https://your-gemini-endpoint.example' : 'https://your-provider.example/v1'} autoComplete="off" /></label>}
-    {config.kind === 'gemini' && <p className="cf-hint">Origin only, no /v1beta suffix — the Gemini client adds the version path itself. Leave blank to use Google.</p>}
-    {(compatible || config.kind === 'gemini') && <label>Model ID<input required={compatible && enabled} value={model} onChange={e => setModel(e.target.value)} placeholder="Exact model ID from your provider" autoComplete="off" /></label>}
-    {config.kind === 'upload_post' && <label>Default social profile<input value={model} onChange={e => setModel(e.target.value)} placeholder="Upload-Post profile username" autoComplete="off" /></label>}
-    {config.kind === 'youtube'
-      ? <><label>YouTube cookies (Netscape cookies.txt)<textarea rows={8} value={token} onChange={e => setToken(e.target.value)} autoComplete="off" placeholder={config.token_configured ? 'Cookies saved · paste a fresh export to replace them' : 'Paste the full cookies.txt export for youtube.com'} spellCheck={false} /></label>
-        <p className="cf-hint">Export from your browser with the “Get cookies.txt LOCALLY” extension while signed in to YouTube. Cookies expire — if downloads start failing again, paste a fresh export. Stored encrypted, never shown back.</p></>
-      : <label>API key<input type="password" value={token} onChange={e => setToken(e.target.value)} autoComplete="off" placeholder={config.token_configured ? 'Key saved · leave blank to keep it' : compatible ? 'Optional for local endpoints' : 'Paste your API key'} /></label>}
-    <label className="cf-check"><input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} />Use this provider configuration</label>
-    <div className="cf-plan-actions"><button type="button" className="cf-text-button" disabled={saving || config.source !== 'vault'} onClick={remove}>{config.kind === 'youtube' ? 'Remove cookies' : 'Use deployment environment'}</button><button className="cf-primary" disabled={saving}>{saving ? <Loader2 size={14} className="cf-spin" /> : <KeyRound size={14} />}Save connection</button></div>
-  </form>
 }

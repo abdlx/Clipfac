@@ -73,7 +73,7 @@ function detectTimezone() {
     }
 }
 
-export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, uploadPostKey, uploadUserId, isManaged }) {
+export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, uploadUserId }) {
     const [time, setTime] = useState('12:00');
     const [timezone, setTimezone] = useState(detectTimezone);
     const [platforms, setPlatforms] = useState({
@@ -138,7 +138,7 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, uploa
                 clip_index: index,
                 // Sent only when the browser has them (override); otherwise the
                 // server resolves the key + profile from the saved connection.
-                ...(uploadPostKey ? { api_key: uploadPostKey } : {}),
+                // No key here: the server resolves it from the saved connection.
                 ...(uploadUserId ? { user_id: uploadUserId } : {}),
                 platforms: selectedPlatforms,
                 title: clip.video_title_for_youtube_short || 'Viral Short',

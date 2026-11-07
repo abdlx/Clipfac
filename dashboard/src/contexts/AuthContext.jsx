@@ -9,7 +9,6 @@ import { getApiUrl } from '../config';
 import { apiFetch, apiJson, getToken, setToken, clearToken } from '../lib/api';
 import { track, identify, reset as resetAnalytics } from '../lib/analytics';
 import { report as reportAttribution } from '../lib/attribution';
-import { readPendingPlan } from '../lib/pendingPlan';
 import { ensureMediaToken, clearMediaToken } from '../lib/mediaToken';
 
 // Google sign-in: the verifier for the code the callback returns. Kept in
@@ -117,8 +116,6 @@ export function AuthProvider({ children }) {
       // before the rest of the tools unlock. os_welcomed keeps this once-only
       // even if they skip the tutorial.
       const paid = ['starter', 'creator', 'pro'].includes(signedInMe?.plan);
-      // A plan picked before signing in: back to pricing, which opens its checkout.
-      if (signedInMe?.user && !paid && readPendingPlan()) destination = '#/pricing';
       let welcomed = false;
       try { welcomed = localStorage.getItem('os_welcomed') === '1'; } catch (_) { /* ignore */ }
       if (signedInMe?.user && !paid && !welcomed) {

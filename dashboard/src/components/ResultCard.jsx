@@ -63,7 +63,7 @@ function formatDuration(clip) {
     return `${String(Math.floor(secs / 60)).padStart(2, '0')}:${String(secs % 60).padStart(2, '0')}`;
 }
 
-export default function ResultCard({ clip, index, jobId, durable, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null }) {
+export default function ResultCard({ clip, index, jobId, durable, uploadUserId, vaultKeys = {}, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null }) {
     const [showModal, setShowModal] = useState(false);
     // The "why" line is clamped to two lines so cards in a row stay level;
     // when it overflows, a hover (desktop) or tap (touch) shows the whole
@@ -322,14 +322,13 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
         setIsEditing(true);
         setEditError(null);
         try {
-            const apiKey = geminiApiKey || localStorage.getItem('gemini_key');
-
-            // Managed (paid) users get the Gemini key resolved server-side;
-            // only BYOK/self-host needs a local key.
-            if (!apiKey && !isManaged) {
-                throw new Error("Gemini API Key is missing. Please set it in Settings.");
+            // The server resolves the Gemini key from the vault; this only
+            // fires when nothing is saved there.
+            if (!vaultKeys?.gemini && !isManaged) {
+                throw new Error("Gemini API key is missing. Save one in Settings → Provider connections.");
             }
-            const geminiHeaders = apiKey ? { 'X-Gemini-Key': apiKey } : {};
+            // No key header: the server injects the vault's Gemini key.
+            const geminiHeaders = {};
 
             // Try Remotion effects endpoint first
             const effectsRes = hasServerBurns ? null : await apiFetch('/api/effects/generate', {
@@ -631,11 +630,11 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
         setIsTranslating(true);
         setEditError(null);
         try {
-            const apiKey = elevenLabsKey;
-            console.log('[Translate] API Key available:', !!apiKey);
+            const hasElevenLabsKey = !!vaultKeys?.elevenlabs;
+            console.log('[Translate] API Key available:', hasElevenLabsKey);
 
-            if (!apiKey) {
-                throw new Error("ElevenLabs API Key is missing. Please set it in Settings.");
+            if (!hasElevenLabsKey) {
+                throw new Error("ElevenLabs API key is missing. Save one in Settings → Provider connections.");
             }
 
             const requestBody = {
@@ -647,11 +646,11 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
             console.log('[Translate] Request body:', requestBody);
             console.log('[Translate] Sending request to /api/translate');
 
+            // No key header: the server injects the vault's ElevenLabs key.
             const res = await apiFetch('/api/translate', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-ElevenLabs-Key': apiKey
                 },
                 body: JSON.stringify(requestBody)
             });
@@ -719,9 +718,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
             const payload = {
                 job_id: jobId,
                 clip_index: index,
-                // Sent only when the browser has them (override); otherwise the
-                // server resolves the key + profile from the saved connection.
-                ...(uploadPostKey ? { api_key: uploadPostKey } : {}),
+                // No key here: the server resolves it from the saved connection.
                 ...(uploadUserId ? { user_id: uploadUserId } : {}),
                 platforms: selectedPlatforms,
                 title: postTitle,
@@ -1023,9 +1020,10 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                     <button
                         onClick={(e) => {
                             e.preventDefault();
-                            // Free clips are watermarked — surface the upsell once
+                            // Free-plan clips are watermarked — surface the upsell once
                             // before the first download, then get out of the way.
-                            if (plan === 'free' && !watermarkNoticeDismissed(jobId)) {
+                            // Managed-only: self-host has no watermark and no plans.
+                            if (isManaged && plan === 'free' && !watermarkNoticeDismissed(jobId)) {
                                 setShowWatermarkModal(true);
                                 return;
                             }
@@ -1232,7 +1230,7 @@ export default function ResultCard({ clip, index, jobId, durable, uploadPostKey,
                 onTranslate={handleTranslate}
                 isProcessing={isTranslating}
                 videoUrl={currentVideoUrl}
-                hasApiKey={!!elevenLabsKey}
+                hasApiKey={!!vaultKeys?.elevenlabs}
             />
 
             {showWatermarkModal && (
