@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/clipfac-production]
   pull_request:
 
 jobs:
@@ -23,7 +23,9 @@ jobs:
         run: >
           pip install pytest pillow httpx pydantic sqlalchemy greenlet numpy
           opencv-python-headless python-dotenv google-genai fastapi boto3
-          PyJWT email-validator python-multipart
+          PyJWT email-validator python-multipart cryptography
+      - name: Install media tools
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - name: Run tests
         run: pytest tests/ -v
 
@@ -43,3 +45,5 @@ jobs:
         run: npm ci
       - name: Build
         run: npm run build
+      - name: Lint
+        run: npm run lint

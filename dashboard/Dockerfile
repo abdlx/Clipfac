@@ -3,19 +3,19 @@
 # by default. Local docker-compose targets the `dev` stage explicitly.
 
 # ---- deps + dev server (local) ----
-FROM node:18-alpine AS dev
+FROM node:22-alpine AS dev
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm install
+RUN npm ci
 COPY . .
 EXPOSE 5173
 CMD ["npm", "run", "dev", "--", "--host"]
 
 # ---- production build ----
-FROM node:18-alpine AS build
+FROM node:22-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
-RUN npm install
+RUN npm ci
 COPY . .
 # Vite bakes env at BUILD time. Set VITE_API_URL to the backend's public URL
 # (Coolify: add it as a build variable on the frontend service). Empty = same-origin.

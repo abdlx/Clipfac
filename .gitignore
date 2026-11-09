@@ -52,3 +52,12 @@ CLAUDE.local.md
 
 # Rust build output
 osrender/target/
+
+# Clipfac private runtime data
+data/
+*.sqlite3
+*.sqlite3-*
+
+# Private real-media benchmark inputs/results
+benchmark-manifest.local.json
+benchmark-results*.json

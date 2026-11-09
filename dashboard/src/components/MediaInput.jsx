@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link2, Upload, FileVideo, X, Info, Loader2, ChevronDown } from 'lucide-react';
 import { track } from '../lib/analytics';
 import { getApiUrl } from '../config';
-import SourceCost from './SourceCost';
 
 const SUPPORTED_PLATFORMS = [
     'YouTube', 'Vimeo', 'TikTok', 'X / Twitter', 'Twitch', 'Kick',
@@ -258,14 +257,6 @@ export default function MediaInput({ onProcess, isProcessing }) {
                         )}
                     </div>
                 )}
-
-                <SourceCost
-                    mode={mode}
-                    url={url}
-                    fileSeconds={fileSeconds}
-                    range={range}
-                    onRangeChange={setRange}
-                />
 
                 {/* Output format selector */}
                 <div className="mt-5" data-tutorial="output-format">

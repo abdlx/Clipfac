@@ -80,6 +80,7 @@ QUALITY_PROBE_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 # Stripe key, the JWT signing secret or the database password; one exploit
 # in that stack would otherwise hand over all of them.
 CHILD_ENV_DENYLIST = frozenset({
+    "CLIPFAC_ADMIN_TOKEN", "CLIPFAC_AGENT_TOKENS", "CLIPFAC_VAULT_KEY", "FAL_KEY",
     "DATABASE_URL", "POSTGRES_PASSWORD", "JWT_SECRET",
     "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET",
     "SMTP_USER", "SMTP_PASSWORD",
@@ -231,8 +232,33 @@ def resolve_post_profile(forced_profile: Optional[str], client_profile: Optional
     # key resolved above, so it picks its own profile.
     profile = forced_profile or client_profile
     if not profile:
-        raise HTTPException(status_code=400, detail="Missing Upload-Post user profile")
+        raise HTTPException(
+            status_code=400,
+            detail="No Upload-Post profile to post as — set a default profile in Provider connections, or pick a profile in the editor")
     return profile
+
+
+async def _server_post_profile(request: Request) -> Optional[str]:
+    """The Upload-Post profile to post as, resolved server-side (self-host).
+
+    Order: the vault's default profile (CLIPFAC_UPLOAD_PROFILE), then the
+    single connected profile. Returns None when no profile can be determined,
+    so the caller can ask the user to pick one instead of failing silently.
+    The browser is never asked for a key or a profile.
+    """
+    profile = os.environ.get("CLIPFAC_UPLOAD_PROFILE")
+    if profile:
+        return profile
+    try:
+        from clipfac.api import client as clipfac_client
+        async with clipfac_client(request) as api:
+            response = await api.get("/api/social/user")
+        candidates = response.json().get("profiles", []) if response.is_success else []
+        if len(candidates) == 1:
+            return candidates[0].get("username")
+    except Exception:
+        pass
+    return None
 
 
 def upgrade_url(src: str = "api", plan: str = "starter") -> str:
@@ -1632,10 +1658,24 @@ def _install_drain_signal_handler():
         print(f"⚠️ Drain-on-SIGTERM unavailable ({e}); jobs will resume on restart instead.")
 
 
+def _clipfac_render_env(env):
+    """Persist only editorial controls; never provider credentials or arbitrary env."""
+    allowed = {"CLIPFAC_STYLE", "CLIPFAC_EDITORIAL_BRIEF", "CLIP_TARGET_MIN",
+               "CLIP_TARGET_MAX", "CLIP_MIN_SECONDS", "CLIP_MAX_SECONDS",
+               "AUTO_HOOK", "AUTO_HOOK_STYLE", "AUTO_CAPTIONS", "AUTO_LAYOUT",
+               "CLIPFAC_ANALYSIS_ONLY", "CLIPFAC_STYLE_AUTO", "CLIPFAC_RENDER_PLAN_FILE",
+               "CLIPFAC_CANDIDATE_LIMIT"}
+    # LAYOUT_ENV is defined later in this module, before the lifespan runs.
+    allowed.update(LAYOUT_ENV.values())
+    for values in LAYOUT_IMPLIES.values():
+        allowed.update(values)
+    return {key: str(value) for key, value in env.items() if key in allowed}
+
+
 def _write_resume_manifest(job_id, cmd, priority, user_id, reservation_id, watermark,
                            webhook_url=None, webhook_secret=None, base_url=None,
                            partial=None, source_cap_minutes=None, skip_statics=False,
-                           via_api_key=False):
+                           via_api_key=False, render_env=None):
     try:
         path = os.path.join(OUTPUT_DIR, job_id, _RESUME_FILE)
         with open(path, "w") as f:
@@ -1660,6 +1700,7 @@ def _write_resume_manifest(job_id, cmd, priority, user_id, reservation_id, water
                 # The probe's "statics bot-checked for this video" verdict.
                 "skip_statics": bool(skip_statics),
                 "via_api_key": bool(via_api_key),
+                "render_env": _clipfac_render_env(render_env or {}),
             }, f)
     except Exception as e:
         print(f"⚠️ Could not write resume manifest for {job_id}: {e}")
@@ -1713,6 +1754,13 @@ def _resume_interrupted_jobs() -> set:
             print(f"⚠️ Bad resume manifest for {job_id}: {e}")
             continue
 
+        if not BILLING_ENABLED:
+            from clipfac import outbox
+            terminal = outbox.terminal(job_id)
+            if terminal:
+                jobs[job_id] = {**terminal, "logs": _TimedLog(terminal.get("logs") or [])}
+                _clear_resume_manifest(job_id)
+                continue
         if m.get("reservation_id"):
             keep_reservations.add(str(m["reservation_id"]))
         if job_id in jobs:
@@ -1735,6 +1783,7 @@ def _resume_interrupted_jobs() -> set:
         # Rebuild env from scratch — the manifest holds no secrets. Managed
         # (cloud) jobs get the server key; self-host falls back to its env key.
         env = child_env()
+        env.update(_clipfac_render_env(m.get("render_env") or {}))
         try:
             from cloud import proxy_ledger as _pl
             if BILLING_ENABLED and _pl.budget_exceeded_sync():
@@ -2135,6 +2184,10 @@ async def run_job_wrapper(job_id):
             job_queue.task_done()
             print(f"🔁 Released slot for job {job_id} (auto-retry scheduled).")
             return
+        # Persist standalone callbacks before dropping the recovery manifest.
+        # A restart after this point recovers the terminal snapshot from SQLite.
+        if not BILLING_ENABLED and job and job.get("webhook_url"):
+            await _notify_job_webhook(job_id)
         # The subprocess returned (success or genuine failure) — a terminal
         # state, so drop the resume manifest. It only survives if the container
         # was killed mid-run, which is exactly when we want to resume.
@@ -2528,7 +2581,6 @@ async def _notify_job_webhook(job_id):
     url = job.get('webhook_url')
     if not url or job.get('webhook_sent'):
         return
-    job['webhook_sent'] = True
     completed = job.get('status') == 'completed'
     payload = {
         "event": "job.completed" if completed else "job.failed",
@@ -2538,6 +2590,16 @@ async def _notify_job_webhook(job_id):
     }
     if not completed:
         payload["error"] = _job_error_text(job.get('logs', []))[-500:]
+    if completed and (job.get("result") or {}).get("analysis"):
+        payload["analysis"] = job["result"]["analysis"]
+    if not BILLING_ENABLED:
+        from clipfac import outbox
+        snapshot = {"status": job.get("status"), "result": job.get("result"),
+                    "logs": list(job.get("logs") or [])[-10:], "user_id": None}
+        outbox.enqueue(job_id, url, job.get("webhook_secret"), payload, snapshot)
+        job["webhook_sent"] = True
+        return
+    job["webhook_sent"] = True
     body = json.dumps(payload).encode()
     asyncio.create_task(_deliver_webhook(url, body, job.get('webhook_secret')))
 
@@ -2687,7 +2749,15 @@ async def lifespan(app: FastAPI):
         # a single job-failure alert is easy to miss and ingest stays broken
         # until someone tops the balance up.
         asyncio.create_task(_alerts.proxy_watch_loop())
+    outbox_task = None
+    if not BILLING_ENABLED:
+        from clipfac.outbox import run as _run_outbox
+        outbox_task = asyncio.create_task(_run_outbox())
     yield
+    if outbox_task:
+        outbox_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await outbox_task
     # Cleanup (optional: cancel worker)
 
 app = FastAPI(lifespan=lifespan)
@@ -3189,6 +3259,16 @@ async def run_job(job_id, job_data):
 
         returncode = process.returncode
         
+        if returncode == 0 and env.get("CLIPFAC_ANALYSIS_ONLY") == "1":
+            from clipfac.stages import read_analysis
+            analysis = read_analysis(OUTPUT_DIR, job_id)
+            jobs[job_id]["status"] = "completed"
+            jobs[job_id]["result"] = {"clips": [], "analysis": {
+                "job_id": job_id, "candidate_count": len(analysis["candidates"]),
+                "profile": analysis["profile"], "warnings": analysis["warnings"],
+            }}
+            jobs[job_id]["logs"].append("Analysis ready. Review an edit plan before rendering.")
+            return
         if returncode == 0:
             jobs[job_id]['status'] = 'completed'
             jobs[job_id]['logs'].append("Process finished successfully.")
@@ -3271,6 +3351,41 @@ async def get_config():
         # because the moment picker runs on an OpenAI-compatible server.
         "localLlm": None if BILLING_ENABLED else llm_backend.describe(),
     }
+
+
+if not BILLING_ENABLED:
+    @app.get("/api/me")
+    async def get_me_self_host():
+        """Self-host identity for the dashboard's AuthContext.
+
+        The hosted /api/me lives in cloud/auth.py and is not mounted on a
+        self-host install, so without this stub every refreshMe() call 404s —
+        and AuthContext treats ANY refreshMe error as a stale token and wipes
+        the saved installation token, silently logging the user out mid-job
+        (the job poller then 401-loops forever). Shape mirrors the hosted
+        payload's fields the dashboard reads (user.id, plan, entitled).
+        """
+        return {
+            "user": {"id": "local", "email": None},
+            "entitled": False,
+            "plan": "free",
+            "status": None,
+            "interval": None,
+            "period_end": None,
+            "cancel_at_period_end": False,
+            "hold_until": None,
+            "hold_scheduled": False,
+            "has_billing_account": False,
+            "minutes": {
+                "plan_allowance": None,
+                "plan_used": 0,
+                "plan_remaining": None,
+                "topup_remaining": 0,
+                "remaining": None,
+            },
+            "upload_post_profile": None,
+            "onboarding_survey_pending": False,
+        }
 
 async def _probe_youtube_quality(url: str) -> dict:
     """Run quality_probe.py in a worker thread; {} on any failure (fail-open)."""
@@ -3626,8 +3741,12 @@ async def process_endpoint(
     source_start: Optional[str] = Form(None),
     source_end: Optional[str] = Form(None),
 ):
+    initial_body = await request.json() if "application/json" in request.headers.get("content-type", "") else {}
+    if not isinstance(initial_body, dict):
+        raise HTTPException(400, "Request body must be a JSON object")
+    planned_request = isinstance(initial_body, dict) and bool(initial_body.get("clipfac_plan_id"))
     api_key = await resolve_gemini(request)
-    if not api_key and not (llm_backend.active() and not BILLING_ENABLED):
+    if not api_key and not (llm_backend.active() and not BILLING_ENABLED) and not planned_request:
         # Self-host with an OpenAI-compatible server configured needs no
         # Google key for the core pipeline: the moment picker runs there and
         # the frame-based stages degrade on their own (layout_picker returns
@@ -3660,6 +3779,27 @@ async def process_endpoint(
         source_start = body.get("source_start")
         source_end = body.get("source_end")
 
+    # Clipfac metadata stays per-job, never in process-global environment.
+    clipfac_style = None
+    clipfac_brief = None
+    clipfac_max_clips = None
+    if "application/json" in content_type and body.get("clipfac_style"):
+        from clipfac.presets import get_preset
+        try:
+            get_preset(body["clipfac_style"])
+            clipfac_style = body["clipfac_style"]
+            raw_brief = body.get("clipfac_brief", {})
+            if not isinstance(raw_brief, dict):
+                raise ValueError("Editorial brief must be an object")
+            clipfac_brief = json.dumps(raw_brief, ensure_ascii=False)
+            if len(clipfac_brief) > 16000:
+                raise ValueError("Editorial brief is too long")
+            clipfac_max_clips = int(body.get("clipfac_max_clips", 15))
+            if not 1 <= clipfac_max_clips <= 60:
+                raise ValueError("Clip ceiling must be 1–60")
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(400, str(exc))
+
     # Normalize output format (auto = keep pipeline default).
     if output_format not in ("vertical", "horizontal", "square"):
         output_format = "auto"
@@ -3683,12 +3823,36 @@ async def process_endpoint(
         if not src or not os.path.exists(src):
             raise HTTPException(status_code=404, detail="Source video for this session is no longer on disk")
 
+    planned_source = None
+    if planned_request:
+        if BILLING_ENABLED:
+            raise HTTPException(409, "Standalone edit plans require self-host mode")
+        from clipfac.auth import request_owner
+        from clipfac import plans as _plans
+        from clipfac.stages import read_analysis, source_hash
+        document = _plans.get(str(initial_body["clipfac_plan_id"]), request_owner(request))
+        if not document:
+            raise HTTPException(404, "Edit plan not found")
+        if url or file or upload_id or thumb_session:
+            raise HTTPException(400, "A plan render cannot supply a second source")
+        try:
+            analysis = read_analysis(OUTPUT_DIR, document["analysis_job_id"])
+            retained = _locate_source(document["analysis_job_id"])
+            if not retained or not os.path.isfile(retained):
+                raise ValueError("Retained source expired")
+            if await asyncio.to_thread(source_hash, retained) != document["source_sha256"]:
+                raise ValueError("Retained source fingerprint changed")
+            _plans.compile_candidates(document)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(409, str(exc))
+        planned_source = {"path": retained, "document": document, "analysis": analysis}
+
     # Agent upload (POST /api/uploads + PUT): the file is already on disk.
     upload_slot = None
     if upload_id and not url and not file and not thumb_session:
         upload_slot = _take_pending_upload(upload_id, await _owner_id(request))
 
-    if not url and not file and not thumb_session and not upload_slot:
+    if not url and not file and not thumb_session and not upload_slot and not planned_source:
         raise HTTPException(status_code=400, detail="Must provide URL, File or upload_id")
 
     # Completion callback: reject unsafe targets NOW (clear 400) — delivery
@@ -3748,10 +3912,31 @@ async def process_endpoint(
     # still dies before it renders anything -- the server starts and every job
     # fails instead. setdefault, so an explicit PYTHONIOENCODING still wins.
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.pop("CLIPFAC_ANALYSIS_ONLY", None)
+    env.pop("CLIPFAC_STYLE_AUTO", None)
+    env.pop("CLIPFAC_RENDER_PLAN_FILE", None)
+    if initial_body.get("clipfac_analysis_only"):
+        if planned_source:
+            raise HTTPException(400, "Cannot analyze and render a plan in one request")
+        env["CLIPFAC_ANALYSIS_ONLY"] = "1"
+        env["CLIPFAC_STYLE_AUTO"] = "1" if initial_body.get("clipfac_auto_style") else "0"
+        env["EARLY_AUDIO"] = "0"
+    env.pop("CLIPFAC_STYLE", None)
+    env.pop("CLIPFAC_EDITORIAL_BRIEF", None)
+    if clipfac_style:
+        env["CLIPFAC_STYLE"] = clipfac_style
+        env["CLIPFAC_EDITORIAL_BRIEF"] = clipfac_brief
+        env["CLIP_TARGET_MIN"] = "1"
+        env["CLIP_TARGET_MAX"] = str(clipfac_max_clips)
+        env["CLIPFAC_CANDIDATE_LIMIT"] = str(clipfac_max_clips)
 
     # Optional layouts are per job. The renderer reads these at import time in
     # the subprocess, so they must be set before Popen — same path WATERMARK
     # already takes.
+    if clipfac_style:
+        env["AUTO_LAYOUT"] = "0"
+        for key in set(LAYOUT_ENV.values()) | {key for values in LAYOUT_IMPLIES.values() for key in values}:
+            env[key] = "0"
     chosen = layout_env(layouts)
     env.update(chosen)
     if chosen:
@@ -3766,6 +3951,9 @@ async def process_endpoint(
         if auto_hook_style in HOOK_STYLES:
             env["AUTO_HOOK_STYLE"] = auto_hook_style
         print(f"[auto-hook] job={job_id} style={env.get('AUTO_HOOK_STYLE', 'classic')}")
+
+    if auto_hook is not None and str(auto_hook).lower() in ("0", "false", "no"):
+        env["AUTO_HOOK"] = "0"
 
     # Manual generation controls (discussion #65): optional clip-count target
     # and duration band, forwarded to the selection prompts via the same env
@@ -3815,6 +4003,22 @@ async def process_endpoint(
         # re-render path cuts new segments from it, and it ages out with the
         # rest of the job (retention window + OUTPUT_MAX_GB cap) either way.
         cmd.extend(["-u", url, "--keep-original"])
+    elif planned_source:
+        suffix = os.path.splitext(planned_source["path"])[1] or ".mp4"
+        input_path = os.path.join(job_output_dir, "clipfac-source" + suffix)
+        try:
+            os.link(planned_source["path"], input_path)
+        except OSError:
+            await asyncio.to_thread(shutil.copy2, planned_source["path"], input_path)
+        contract_path = os.path.abspath(os.path.join(job_output_dir, ".clipfac-render-plan.json"))
+        write_json_atomic(contract_path, {
+            "plan": planned_source["document"],
+            "transcript": planned_source["analysis"].get("transcript"),
+            "source_subtitle_band": planned_source["analysis"].get("source_subtitle_band"),
+        }, indent=2)
+        env["CLIPFAC_RENDER_PLAN_FILE"] = contract_path
+        env["CLIPFAC_STYLE"] = planned_source["document"]["style"]
+        cmd.extend(["-i", input_path])
     elif thumb_session:
         # Hardlink (or copy) the session's video under the job's name so source
         # lookup, the clip editor and the preview treat it exactly like a normal
@@ -3986,7 +4190,8 @@ async def process_endpoint(
                            webhook_url=webhook_url, webhook_secret=webhook_secret,
                            base_url=api_base, partial=partial,
                            source_cap_minutes=source_cap, skip_statics=skip_statics,
-                           via_api_key=jobs[job_id]['via_api_key'])
+                           via_api_key=jobs[job_id]['via_api_key'],
+                           render_env=env)
 
     _enqueue_job(job_id, priority)
 
@@ -4004,6 +4209,21 @@ def _job_view_from_disk(job_id):
     job_path = os.path.join(OUTPUT_DIR, job_id)
     if not os.path.isdir(job_path):
         return None
+    if not BILLING_ENABLED:
+        from clipfac import outbox
+        terminal = outbox.terminal(job_id)
+        if terminal:
+            return {**terminal, "logs": _TimedLog(terminal.get("logs") or [])}
+    try:
+        from clipfac.stages import read_analysis
+        analysis = read_analysis(OUTPUT_DIR, job_id)
+        return {"status": "completed", "logs": _TimedLog(["Recovered completed analysis."]),
+                "result": {"clips": [], "analysis": {
+                    "job_id": job_id, "candidate_count": len(analysis["candidates"]),
+                    "profile": analysis["profile"], "warnings": analysis["warnings"]}},
+                "user_id": None}
+    except (OSError, ValueError, KeyError):
+        pass
     m = _read_manifest(job_id)
     if m is None:
         if glob.glob(os.path.join(job_path, "*_metadata.json")):
@@ -4096,6 +4316,15 @@ def _locate_source(job_id: str):
                 if os.path.exists(candidate):
                     return candidate
     except Exception:
+        pass
+    # Analysis-only jobs intentionally have no rendered metadata.
+    try:
+        from clipfac.stages import read_analysis
+        source_name = os.path.basename(read_analysis(OUTPUT_DIR, job_id)["source"]["filename"])
+        candidate = os.path.join(OUTPUT_DIR, job_id, source_name)
+        if os.path.isfile(candidate):
+            return candidate
+    except (OSError, ValueError, KeyError):
         pass
     return None
 
@@ -6267,8 +6496,13 @@ async def post_to_socials(req: SocialPostRequest, request: Request):
     # used and their own profile is forced (body api_key / user_id are ignored).
     upload_key, forced_profile = await resolve_upload_post(request, req.api_key)
     if not upload_key:
-        raise HTTPException(status_code=400, detail="Missing Upload-Post API key")
-    post_user = resolve_post_profile(forced_profile, req.user_id)
+        raise HTTPException(status_code=400, detail="Upload-Post is not connected — add your Upload-Post key in Provider connections")
+    # Self-host: the profile may come from the vault default or the single
+    # connected profile — the browser is never asked for it.
+    client_profile = req.user_id
+    if not BILLING_ENABLED and not client_profile:
+        client_profile = await _server_post_profile(request)
+    post_user = resolve_post_profile(forced_profile, client_profile)
 
     job = jobs[req.job_id]
     await _assert_job_owner(request, job)
@@ -6287,7 +6521,10 @@ async def post_to_socials(req: SocialPostRequest, request: Request):
                 "fail. Use \"connect socials\" and try again."))
 
     try:
-        clip = job['result']['clips'][req.clip_index]
+        clip = next((item for index, item in enumerate(job["result"]["clips"])
+                     if item.get("clipfac_render_index", index) == req.clip_index), None)
+        if clip is None:
+            raise HTTPException(404, "Clip not found")
         # Video URL is relative /videos/..., we need absolute file path
         # clip['video_url'] is like "/videos/{job_id}/{filename}"
         # We constructed it as: f"/videos/{job_id}/{clip_filename}"
@@ -6298,6 +6535,10 @@ async def post_to_socials(req: SocialPostRequest, request: Request):
         
         if not os.path.exists(file_path):
              raise HTTPException(status_code=404, detail=f"Video file not found: {file_path}")
+
+        if not BILLING_ENABLED:
+            from clipfac.publishing import enforce_review
+            await enforce_review(request, req.job_id, req.clip_index, file_path)
 
         # Construct parameters for Upload-Post API
         # Fallbacks
@@ -6358,6 +6599,8 @@ async def post_to_socials(req: SocialPostRequest, request: Request):
             _post_request_owners[str(out["request_id"])] = await _owner_id(request)
         return out
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"❌ Social Post Exception: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -6456,7 +6699,7 @@ async def get_social_user(request: Request):
     """
     api_key, forced_profile = await resolve_upload_post(request, None)
     if not api_key:
-         raise HTTPException(status_code=400, detail="Missing X-Upload-Post-Key header")
+         raise HTTPException(status_code=400, detail="Upload-Post is not connected — add your Upload-Post key in Provider connections")
 
     if BILLING_ENABLED:
         return await _managed_social_user(request, api_key, forced_profile)
@@ -6546,7 +6789,7 @@ async def _social_analytics_auth(request: Request, byok_profile: Optional[str]):
             # Signed-in free user (or no auth at all): social posting is
             # paid-only in cloud, so there are no posts to measure either.
             raise payment_required("no_plan", "Social analytics needs an active OpenShorts plan.")
-        raise HTTPException(status_code=400, detail="Missing X-Upload-Post-Key header")
+        raise HTTPException(status_code=400, detail="Upload-Post is not connected — add your Upload-Post key in Provider connections")
     if forced_profile:
         user = await _user_from_request(request)
         if user:
@@ -7453,8 +7696,13 @@ async def thumbnail_publish(
     # Managed users: server key + forced own profile; body fields ignored.
     upload_key, forced_profile = await resolve_upload_post(request, api_key)
     if not upload_key:
-        raise HTTPException(status_code=400, detail="Missing Upload-Post API key")
-    post_user = resolve_post_profile(forced_profile, user_id)
+        raise HTTPException(status_code=400, detail="Upload-Post is not connected — add your Upload-Post key in Provider connections")
+    # Self-host: the profile may come from the vault default or the single
+    # connected profile — the browser is never asked for it.
+    client_profile = user_id
+    if not BILLING_ENABLED and not client_profile:
+        client_profile = await _server_post_profile(request)
+    post_user = resolve_post_profile(forced_profile, client_profile)
     await _check_social_post_rate(request)
 
     session = thumbnail_sessions[session_id]
@@ -7790,8 +8038,13 @@ async def saasshorts_post_to_socials(req: SaaSPostRequest, request: Request):
 
     upload_key, forced_profile = await resolve_upload_post(request, req.api_key)
     if not upload_key:
-        raise HTTPException(status_code=400, detail="Missing Upload-Post API key")
-    post_user = resolve_post_profile(forced_profile, req.user_id)
+        raise HTTPException(status_code=400, detail="Upload-Post is not connected — add your Upload-Post key in Provider connections")
+    # Self-host: the profile may come from the vault default or the single
+    # connected profile — the browser is never asked for it.
+    client_profile = req.user_id
+    if not BILLING_ENABLED and not client_profile:
+        client_profile = await _server_post_profile(request)
+    post_user = resolve_post_profile(forced_profile, client_profile)
 
     job = saas_jobs[req.job_id]
     await _assert_job_owner(request, job)
@@ -8372,3 +8625,8 @@ async def saasshorts_voices(
         ],
         "source": "defaults",
     }
+
+
+# Clipfac is a separate MIT layer, enabled for standalone self-hosting.
+from clipfac.integration import install as _install_clipfac
+_install_clipfac(app, globals())

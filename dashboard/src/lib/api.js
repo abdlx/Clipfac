@@ -5,7 +5,7 @@ import { getApiUrl } from '../config';
 
 export const AUTH_TOKEN_KEY = 'openshorts_auth';
 
-export const getToken = () => localStorage.getItem(AUTH_TOKEN_KEY) || '';
+export const getToken = () => { try { return localStorage.getItem(AUTH_TOKEN_KEY) || ''; } catch (_) { return ''; } };
 export const setToken = (t) => localStorage.setItem(AUTH_TOKEN_KEY, t);
 export const clearToken = () => localStorage.removeItem(AUTH_TOKEN_KEY);
 
@@ -33,6 +33,9 @@ export function openQuotaWall(err, source) {
 }
 
 // Drop-in fetch wrapper. Always attaches the bearer token when present.
+// Provider keys are never sent from the browser: the server injects the
+// vault's keys on every /api/* call, so a stale browser key can no longer
+// silently override the saved connection.
 export async function apiFetch(path, options = {}) {
   const headers = new Headers(options.headers || {});
   const token = getToken();

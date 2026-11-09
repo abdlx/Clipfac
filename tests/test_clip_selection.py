@@ -113,6 +113,7 @@ class TestCompactWords:
 class TestClipCountTargets:
     """The floor is the whole point: prod was delivering a single clip on the
     mode, and users who got 1-3 came back 0.4% of the time against 16% for 4-9.
+    Volume first — more clips shipped means more chances one of them lands.
     """
 
     def test_floor_clears_the_dead_zone_once_there_is_material(self):
@@ -128,7 +129,7 @@ class TestClipCountTargets:
 
     def test_ceiling_is_capped_so_long_videos_do_not_explode(self):
         assert clip_count_targets(40) == clip_count_targets(12)
-        assert clip_count_targets(40)[1] <= 12
+        assert clip_count_targets(40)[1] <= 20
 
     def test_low_never_exceeds_high(self):
         for n in range(1, 40):
@@ -303,8 +304,8 @@ class TestShortlistTarget:
     def test_scales_with_duration_and_is_capped(self):
         assert shortlist_target(60) == 3          # floor
         assert shortlist_target(9 * 60) == 8      # the measured job
-        assert shortlist_target(60 * 60) == 10    # ceiling
-        assert shortlist_target(3 * 60 * 60) == 10
+        assert shortlist_target(60 * 60) == 15    # ceiling
+        assert shortlist_target(3 * 60 * 60) == 15
 
     def test_degenerate_input_does_not_crash(self):
         assert shortlist_target(None) == 3

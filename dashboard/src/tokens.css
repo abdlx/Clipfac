@@ -1,53 +1,28 @@
-/* Hallmark · genre: atmospheric · theme: lumen (night foundry) · design-system: design.md · designed-as-app
- * macrostructure: Marquee Hero (marketing) / Workbench (app) / Long Document (content)
- * nav: N9 edge-aligned · footer: Ft5 statement · enrichment: filament apparatus (landing only)
- * pre-emit critique: P5 H4 E4 S5 R5 V4
- */
-
+/* Clipfac — warm surfaces, clear hierarchy, blue accents. */
 :root {
-  /* paper */
-  --color-paper: oklch(13% 0.014 265);
-  --color-paper-2: oklch(16.5% 0.015 265);
-  --color-paper-3: oklch(20% 0.016 265);
-
-  /* ink */
-  --color-ink: oklch(96% 0.006 262);
-  --color-ink-2: oklch(86% 0.01 262);
-  --color-muted: oklch(64% 0.012 262);
-
-  /* rules */
-  --color-rule: oklch(96% 0.006 262 / 0.08);
-  --color-rule-2: oklch(96% 0.006 262 / 0.14);
-  --rule-blueprint: oklch(96% 0.006 262 / 0.04);
-
-  /* accents */
-  --color-accent: oklch(76% 0.17 50);
-  --color-accent-ink: oklch(17% 0.03 50);
-  --color-accent-2: oklch(68% 0.16 18);
-  --color-glow: oklch(80% 0.16 50 / 0.42);
-  --color-paper-emit: oklch(76% 0.17 50 / 0.04);
-  --color-focus: oklch(76% 0.17 50);
-
-  /* states */
-  --color-ok: oklch(75% 0.11 150);
-  --color-danger: oklch(66% 0.18 25);
-  --color-warn: oklch(78% 0.14 75);
-
-  /* type */
-  --font-display: "Instrument Serif", ui-serif, Georgia, serif;
-  --font-body: "Geist", ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
-  --text-display: clamp(3rem, 6vw + 1rem, 6rem);
-  --tracking-display: -0.032em;
-  --tracking-micro: 0.10em;
-
-  /* geometry */
-  --radius-card: 10px;
-  --radius-input: 8px;
-
-  /* motion */
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --dur-short: 220ms;
-  --dur-reveal: 600ms;
-  --dur-pulse: 4s;
+  color-scheme: light;
+  --cf-paper: 234 232 229; --cf-panel: 250 250 250; --cf-raised: 255 255 255;
+  --cf-ink: 23 25 29; --cf-ink2: 51 65 81; --cf-muted: 104 117 136;
+  --cf-accent: 22 119 255; --cf-accent-ink: 255 255 255;
+  --color-paper: rgb(var(--cf-paper)); --color-paper-2: rgb(var(--cf-panel)); --color-paper-3: #F0F0F0;
+  --color-ink: rgb(var(--cf-ink)); --color-ink-2: rgb(var(--cf-ink2)); --color-muted: rgb(var(--cf-muted));
+  --color-rule: rgba(25,35,50,.08); --color-rule-2: rgba(25,35,50,.15); --rule-blueprint: rgba(25,35,50,.04);
+  --color-accent: rgb(var(--cf-accent)); --color-accent-ink: #FFFFFF; --color-accent-2: #0D6CE5;
+  --color-glow: rgba(22,119,255,.12); --color-paper-emit: transparent; --color-focus: #1677FF;
+  --color-ok: #0B7A52; --color-danger: #B42318; --color-warn: #9A6400;
+  --font-display: 'Inter', 'Geist', system-ui, sans-serif;
+  --font-body: 'Inter', 'Geist', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --text-display: clamp(2.5rem, 5vw, 4rem); --tracking-display: -.045em; --tracking-micro: .07em;
+  --radius-card: 24px; --radius-input: 12px;
+  --ease-out: cubic-bezier(.16,1,.3,1); --dur-short: 180ms; --dur-reveal: 400ms; --dur-pulse: 4s;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --cf-paper: 17 21 27; --cf-panel: 25 29 36; --cf-raised: 32 36 44;
+  --cf-ink: 237 240 245; --cf-ink2: 186 196 210; --cf-muted: 164 175 190;
+  --cf-accent: 130 178 255; --cf-accent-ink: 17 21 27;
+  --color-paper-3: #292F39; --color-accent-ink: #11151B;
+  --color-rule: rgba(215,225,242,.10); --color-rule-2: rgba(215,225,242,.20);
+  --color-ok: #7DE0B7; --color-danger: #FFA8A0; --color-warn: #F3CC7B;
 }
