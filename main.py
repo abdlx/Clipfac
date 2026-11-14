@@ -18,7 +18,13 @@ import math
 import numpy as np
 from tqdm import tqdm
 import yt_dlp
-import mediapipe as mp
+try:
+    import mediapipe as mp
+except Exception:
+    # Newer mediapipe wheels no longer ship mp.solutions; the face path now
+    # prefers YuNet (clipfac.face_detection) and treats MediaPipe as a legacy
+    # fallback, so a missing MediaPipe must never break the import.
+    mp = None
 # import whisper (replaced by faster_whisper inside function)
 from google import genai
 from google.genai import types as genai_types
@@ -94,10 +100,18 @@ OUTPUT — RETURN ONLY VALID JSON (no markdown, no comments). Order clips by pre
 # volume mounted over the workdir doesn't trigger a re-download at startup.
 model = YOLO(os.environ.get("YOLO_MODEL_PATH", "yolov8n.pt"))
 
-# --- MediaPipe Setup ---
-# Use standard Face Detection (BlazeFace) for speed
-mp_face_detection = mp.solutions.face_detection
-face_detection = mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
+# --- MediaPipe Setup (legacy fallback only) ---
+# Use standard Face Detection (BlazeFace) for speed. Guarded: newer mediapipe
+# wheels no longer ship mp.solutions, and the face path now prefers YuNet
+# (clipfac.face_detection, ported from SupoClip) — a missing or broken
+# MediaPipe must never break the import or the render.
+face_detection = None
+if mp is not None:
+    try:
+        mp_face_detection = mp.solutions.face_detection
+        face_detection = mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
+    except Exception as _mp_exc:
+        print(f"   ⚠️ MediaPipe face detection unavailable ({_mp_exc}); YuNet is primary.")
 
 # Consecutive detections a large target move must survive before the camera
 # follows it (see SmoothedCameraman.update_target). Env-overridable so the
@@ -434,35 +448,69 @@ def _detection_frame(frame):
     return small, scale
 
 
+# Face detector selection. "auto" (default) uses the ported YuNet detector
+# (clipfac.face_detection) with its Haar fallback; "mediapipe" keeps the
+# legacy BlazeFace path; "off" disables face detection entirely (the camera
+# then holds centre / falls back to YOLO person detection, exactly as it
+# does on a faceless frame).
+FACE_DETECTOR = os.environ.get("FACE_DETECTOR", "auto").strip().lower()
+
+
 def detect_face_candidates(frame):
     """
-    Returns list of all detected faces using lightweight FaceDetection.
-    Boxes are in ORIGINAL frame coordinates (detection runs downscaled;
-    MediaPipe's relative coords make the mapping exact).
+    Returns list of all detected faces.
+    Boxes are in ORIGINAL frame coordinates (detection runs downscaled; the
+    small-frame boxes are scaled back up).
+
+    Primary: YuNet (clipfac.face_detection, ported from SupoClip) with a Haar
+    fallback. Legacy: MediaPipe BlazeFace, kept while requirements pins
+    mediapipe==0.10.14 — newer mediapipe wheels no longer ship mp.solutions,
+    so a missing/broken MediaPipe must never take the face path (or the
+    import) down with it. A frame with no faces returns [], exactly as
+    before, and the trajectory holds.
     """
     height, width, _ = frame.shape
-    small, _scale = _detection_frame(frame)
+    if FACE_DETECTOR == "off":
+        return []
+    small, scale = _detection_frame(frame)
+
+    if FACE_DETECTOR != "mediapipe":
+        try:
+            from clipfac import face_detection as _fd
+            with DETECT_LOCK:
+                found = _fd.detect_candidates(small)
+        except Exception:
+            found = None  # detector itself unavailable: try the legacy path
+        if found is not None:
+            out = []
+            for c in found:
+                x, y, w, h = (int(v * scale) for v in c['box'])
+                out.append({'box': [x, y, w, h], 'score': w * h})
+            return out
+
+    if face_detection is None:
+        return []
     rgb_frame = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
     with DETECT_LOCK:
         results = face_detection.process(rgb_frame)
-    
+
     candidates = []
-    
+
     if not results.detections:
         return []
-        
+
     for detection in results.detections:
         bboxC = detection.location_data.relative_bounding_box
         x = int(bboxC.xmin * width)
         y = int(bboxC.ymin * height)
         w = int(bboxC.width * width)
         h = int(bboxC.height * height)
-        
+
         candidates.append({
             'box': [x, y, w, h],
             'score': w * h # Area as score
         })
-            
+
     return candidates
 
 def detect_person_yolo(frame):
@@ -2179,6 +2227,15 @@ def get_viral_clips(transcript_result, video_duration, viewer_clips=None):
         # --- Pass 2: detailed clip extraction on the shortlist ---
         min_clips, max_clips = clip_count_targets(len(shortlist))
 
+        # Performance loop: one read for all detail batches; a failure here
+        # must never break selection (empty feedback leaves the prompt
+        # unchanged in meaning).
+        try:
+            from clipfac.performance import feedback_text
+            _performance_feedback = feedback_text()
+        except Exception:
+            _performance_feedback = ""
+
         def _detail_prompt_for(lo, hi):
             # A split batch keeps the full clip-count band: a short list can
             # still hold the best clips, and the model returns fewer anyway.
@@ -2187,7 +2244,8 @@ def get_viral_clips(transcript_result, video_duration, viewer_clips=None):
                     video_duration=video_duration, language=language,
                     min_clips=lo, max_clips=hi,
                     min_secs=min_secs, max_secs=max_secs,
-                    windows_json=json.dumps(_payload(ws), ensure_ascii=False))
+                    windows_json=json.dumps(_payload(ws), ensure_ascii=False),
+                    performance_feedback=_performance_feedback)
             return build
 
         if os.environ.get("CLIPFAC_CANDIDATE_LIMIT") and max_clips > 15:
@@ -2226,6 +2284,12 @@ def get_viral_clips(transcript_result, video_duration, viewer_clips=None):
                     shorts = sorted(shorts + extra,
                                     key=lambda s: float(s.get("start") or 0))
                     print(f"   Recovered {len(extra)} clip(s) from them.")
+
+        # Virality breakdown: clamp the four sub-scores, recompute the total
+        # as their sum, and keep predicted_score equal to it — before trim
+        # and dedupe rank on it. Clips without a breakdown get null
+        # sub-scores and total = predicted_score.
+        shorts = [gemini_worker.normalize_clip_virality(s) for s in shorts]
 
         if len(shorts) > max_clips:
             # By score, never by position: the results arrive in transcript
@@ -2483,6 +2547,10 @@ def get_visual_clips(video_path, video_duration, language="en", viewer_clips=Non
             finally:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
             clean.sort(key=lambda c: c["start"])
+            # Vision clips carry predicted_score but no breakdown: normalize
+            # so they store the same virality shape (null sub-scores,
+            # total = predicted_score) as transcript clips.
+            clean = [gemini_worker.normalize_clip_virality(c) for c in clean]
             clean = trim_to_best(dedupe_overlapping(clean), v_max_clips)
             if not costs:
                 return None

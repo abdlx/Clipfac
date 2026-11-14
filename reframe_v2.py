@@ -348,11 +348,18 @@ def select_expr(frames, stride):
 
 
 def _trajectory_loop(next_frame, sparse, n_frames, scenes_boundaries,
-                     scene_strategies, orig_w, scale, cameraman, tracker):
+                     scene_strategies, orig_w, scale, cameraman, tracker,
+                     face_following=True):
     """v1's per-frame decision loop. ``next_frame()`` returns the next decoded
     frame (None at the end). Dense: one call per frame, the loop ends with the
     stream. Sparse: ``n_frames`` iterations and a call only where a detector
-    runs (``next_frame(frame_number)``)."""
+    runs (``next_frame(frame_number)``).
+
+    ``face_following=False`` skips every detector call: the camera holds its
+    centre and the YOLO person fallback stays off, so the trajectory is what
+    a clip with no faces at all produces. That is the editor's face-tracking
+    toggle and the fail-soft proof — a faceless clip renders identically
+    with the toggle on or off."""
     import main as m
 
     xs = []
@@ -391,7 +398,7 @@ def _trajectory_loop(next_frame, sparse, n_frames, scenes_boundaries,
                 tracker.reset()
                 cameraman.begin_scene()
 
-            if frame_number % m.DETECT_STRIDE == 0 or cut:
+            if face_following and (frame_number % m.DETECT_STRIDE == 0 or cut):
                 if sparse:
                     frame = next_frame(frame_number)
                 candidates = m.detect_face_candidates(frame)
@@ -423,13 +430,17 @@ def _read_frame(stream, frame_bytes, shape):
 
 def _sparse_trajectory(input_video, n_frames, on_gpu, small_w, small_h,
                        scenes_boundaries, scene_strategies, orig_w, scale,
-                       cameraman, tracker):
+                       cameraman, tracker, face_following=True):
     """The trajectory decoding only the detector's frames (plus the last one,
-    and anything past it, to prove the clip has exactly ``n_frames``)."""
+    and anything past it, to prove the clip has exactly ``n_frames``).
+
+    With face following off there is nothing to detect, so only the last
+    frame is decoded (the count proof)."""
     import main as m
 
-    wanted = _detection_frames(scenes_boundaries, scene_strategies, n_frames,
+    wanted = (_detection_frames(scenes_boundaries, scene_strategies, n_frames,
                                m.DETECT_STRIDE, m.SCENE_CUT_RESET)
+              if face_following else [])
     piped = sorted(set(wanted) | {n_frames - 1})
     expr = gpu_decode.any_of([select_expr(piped, m.DETECT_STRIDE), f"gte(n,{n_frames})"])
     chain = f"scale={small_w}:{small_h}"
@@ -455,7 +466,8 @@ def _sparse_trajectory(input_video, n_frames, on_gpu, small_w, small_h,
 
     try:
         xs = _trajectory_loop(next_frame, True, n_frames, scenes_boundaries,
-                              scene_strategies, orig_w, scale, cameraman, tracker)
+                              scene_strategies, orig_w, scale, cameraman, tracker,
+                              face_following=face_following)
         for frame_number in queue:  # the last frame, when no detector wanted it
             if _read_frame(proc.stdout, frame_bytes, shape) is None:
                 raise _SparseMismatch(f"stream ended before frame {frame_number}")
@@ -469,7 +481,8 @@ def _sparse_trajectory(input_video, n_frames, on_gpu, small_w, small_h,
 
 
 def _analyze_trajectory(input_video, scenes_boundaries, scene_strategies,
-                        fps, orig_w, orig_h, cameraman, tracker):
+                        fps, orig_w, orig_h, cameraman, tracker,
+                        face_following=True):
     """Replays v1's per-frame decision loop on a downscaled ffmpeg-decoded
     stream. Returns xs: crop x per frame (None on GENERAL frames).
 
@@ -496,7 +509,8 @@ def _analyze_trajectory(input_video, scenes_boundaries, scene_strategies,
             try:
                 xs = _sparse_trajectory(input_video, n_frames, on_gpu, small_w, small_h,
                                         scenes_boundaries, scene_strategies, orig_w,
-                                        scale, cameraman, tracker)
+                                        scale, cameraman, tracker,
+                                        face_following=face_following)
                 gpu_decode.note(on_gpu)
                 return xs
             except _SparseMismatch as e:
@@ -519,7 +533,7 @@ def _analyze_trajectory(input_video, scenes_boundaries, scene_strategies,
             xs = _trajectory_loop(
                 lambda: _read_frame(proc.stdout, frame_bytes, (small_h, small_w, 3)),
                 False, None, scenes_boundaries, scene_strategies, orig_w, scale,
-                cameraman, tracker)
+                cameraman, tracker, face_following=face_following)
         finally:
             proc.stdout.close()
             rc = proc.wait()
@@ -640,7 +654,8 @@ def encode_scenes(input_video, specs, orig_w, orig_h, out_w, out_h, fps,
 
 
 def render(input_video, final_output_video, aspect_ratio, content_ranges=None,
-           force_strategy=None, crop_overrides=None, watermark=False):
+           force_strategy=None, crop_overrides=None, watermark=False,
+           face_following=True):
     """Full v2 reframe of one clip. Raises on failure (caller falls back).
 
     ``content_ranges`` pins which stretches (in this clip's timeline) show a
@@ -661,6 +676,15 @@ def render(input_video, final_output_video, aspect_ratio, content_ranges=None,
     ``watermark`` overlays the free-plan mark (main.watermark_filter) in every
     segment's own encode, instead of main.apply_watermark re-encoding the
     finished clip once more.
+
+    ``face_following`` (default on) lets the 9:16 crop follow the dominant
+    face: the trajectory loop runs YuNet face detection
+    (``clipfac.face_detection``, ported from SupoClip) through the existing
+    SpeakerTracker + SmoothedCameraman. Off, no detector runs at all and the
+    trajectory is exactly what a clip with no faces produces — the fail-soft
+    path, and what the editor's face-tracking toggle means until the reframe
+    endpoint grows a flag for it (it currently takes only crop_overrides, so
+    the editor implements "off" today by locking every scene to centre).
     """
     import main as m
     content_ranges = content_ranges or []
@@ -815,7 +839,8 @@ def render(input_video, final_output_video, aspect_ratio, content_ranges=None,
     tracker = m.SpeakerTracker(cooldown_frames=30)
 
     xs = _analyze_trajectory(input_video, scene_boundaries, strategies, fps,
-                             orig_w, orig_h, cameraman, tracker)
+                             orig_w, orig_h, cameraman, tracker,
+                             face_following=face_following)
     if not xs:
         raise RuntimeError("analysis produced no frames")
 

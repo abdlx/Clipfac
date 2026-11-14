@@ -1,7 +1,10 @@
 """Stable gaming composition: complete HUD overview plus a larger centre detail.
 
-No face detector, inventory-avatar tracking, scene-dependent layout switching
-or blurred duplicate. Centre detail is a fixed crop, not enemy tracking.
+Face detection now exists in the package (``clipfac.face_detection`` — YuNet,
+ported from SupoClip — feeds the reframe engine's tracker), but this layout
+still does not use it: no inventory-avatar tracking, scene-dependent layout
+switching or blurred duplicate. Centre detail is a fixed crop, not enemy
+tracking.
 """
 import json
 import subprocess

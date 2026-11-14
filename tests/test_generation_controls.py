@@ -63,7 +63,8 @@ class TestPromptTemplates:
     def test_detail_template_carries_the_band(self):
         text = _templates()["DETAIL_PROMPT_TEMPLATE"].format(
             video_duration=100, language="es", min_clips=2, max_clips=4,
-            min_secs=10.0, max_secs=20.0, windows_json="[]")
+            min_secs=10.0, max_secs=20.0, windows_json="[]",
+            performance_feedback="")
         assert "10 to 20 seconds" in text
         assert "return 2 to 4 clips" in text
 

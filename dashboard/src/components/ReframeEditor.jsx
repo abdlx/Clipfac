@@ -30,6 +30,12 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
     const [overrides, setOverrides] = useState({});   // idx -> number | {top,bottom}
     const [playing, setPlaying] = useState(null);     // scene index being played
     const [saving, setSaving] = useState(false);
+    // Face following (YuNet face tracking in the reframe engine): on, the
+    // automatic crop follows the dominant face per scene; off, every scene
+    // the user did not hand-position is locked to the centre instead.
+    // The reframe endpoint takes only crop_overrides, so "off" is sent as a
+    // centre (0.5) override for every untouched scene — no backend change.
+    const [faceFollowing, setFaceFollowing] = useState(true);
 
     useEffect(() => {
         let alive = true;
@@ -46,6 +52,15 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
                 setOverrides(Object.fromEntries(
                     Object.entries(salvos).map(([k, v]) => [Number(k), v])
                 ));
+                // A previous "face following off" save is a centre lock on
+                // every scene: reopen with the toggle off so it stays off.
+                const scenes = res.scenes || [];
+                if (scenes.length > 0 && scenes.every((s) => {
+                    const v = salvos[s.index];
+                    return typeof v === 'number' && Math.abs(v - 0.5) < 0.01;
+                })) {
+                    setFaceFollowing(false);
+                }
             } catch (e) {
                 if (alive) setError(e?.message || 'Could not read the scenes of this clip.');
             } finally {
@@ -110,12 +125,36 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
 
     const adjusted = Object.keys(overrides).length;
 
+    // Whether the backend's face tracker found a face in each scene. The
+    // scenes endpoint starts the rectangle on the biggest face it found and
+    // leaves it at 0.5 when it found none — so "face found" is a lower
+    // bound: a face dead-centre also reads 0.5.
+    const sceneHasFace = (scene) =>
+        scene.suggested_center !== 0.5 || scene.suggested_center_y !== 0.5;
+    const facesFound = (data?.scenes || []).filter(sceneHasFace).length;
+
+    // With face following off, saving locks every untouched scene to the
+    // centre, so those scenes count as sent even though the user never
+    // touched them.
+    const sendCount = faceFollowing
+        ? adjusted
+        : (data?.scenes?.length || 0);
+
     const handleSave = async () => {
-        if (!adjusted || saving) return;
+        if (!sendCount || saving) return;
         setSaving(true);
         setError(null);
         try {
-            const payload = Object.fromEntries(Object.entries(overrides).map(([k, v]) => [
+            // With face following off, every scene the user did not
+            // hand-position is locked to the centre (0.5) so the automatic
+            // camera cannot follow a face; hand positions always win.
+            const effective = { ...overrides };
+            if (!faceFollowing) {
+                for (const scene of data?.scenes || []) {
+                    if (!(scene.index in effective)) effective[scene.index] = 0.5;
+                }
+            }
+            const payload = Object.fromEntries(Object.entries(effective).map(([k, v]) => [
                 String(k),
                 typeof v === 'object'
                     ? { top: { x: Number(v.top.x.toFixed(4)), y: Number(v.top.y.toFixed(4)) },
@@ -161,6 +200,32 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
                         alone keep the automatic camera.
                     </p>
 
+                    {/* Face tracking: YuNet face detection in the reframe engine.
+                        The per-scene count comes from the suggested centre the
+                        backend returned — 0.5 means no face was found there. */}
+                    {data?.scenes && (
+                        <div className="flex flex-col gap-2 rounded-input border border-rule p-3">
+                            <label className="flex items-center justify-between gap-3 cursor-pointer">
+                                <span className="text-xs text-ink2">follow faces</span>
+                                <input
+                                    type="checkbox"
+                                    checked={faceFollowing}
+                                    onChange={(e) => setFaceFollowing(e.target.checked)}
+                                    className="w-4 h-4"
+                                />
+                            </label>
+                            <p className="text-[11px] text-muted leading-snug">
+                                {faceFollowing
+                                    ? 'the automatic crop follows the speaker in each scene.'
+                                    : 'the crop stays centred on every scene instead of following the speaker.'}
+                                {' '}
+                                {facesFound > 0
+                                    ? `faces found in ${facesFound} of ${data.scenes.length} scene${data.scenes.length > 1 ? 's' : ''}.`
+                                    : 'no faces found in this clip — the automatic camera stays centred either way.'}
+                            </p>
+                        </div>
+                    )}
+
                     {loading && (
                         <div className="flex items-center gap-2 text-sm text-muted py-8 justify-center">
                             <Loader2 size={18} className="animate-spin text-brass" />
@@ -179,6 +244,7 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
                         <SceneRow
                             key={scene.index}
                             scene={scene}
+                            hasFace={sceneHasFace(scene)}
                             value={valueOf(scene)}
                             widthFraction={data.crop_width_fraction}
                             previewUrl={data.preview_url}
@@ -195,15 +261,17 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
 
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 border-t border-rule">
                     <span className="text-xs text-muted">
-                        {adjusted === 0
-                            ? 'nothing adjusted yet'
-                            : `${adjusted} scene${adjusted > 1 ? 's' : ''} reframed by hand`}
+                        {!faceFollowing
+                            ? `face following off — ${sendCount} scene${sendCount !== 1 ? 's' : ''} locked to centre`
+                            : adjusted === 0
+                                ? 'nothing adjusted yet'
+                                : `${adjusted} scene${adjusted > 1 ? 's' : ''} reframed by hand`}
                     </span>
                     <div className="flex items-center gap-2 [&>button]:flex-1 sm:[&>button]:flex-none">
                         <button onClick={onClose} className="btn-quiet py-2 px-4 text-sm">cancel</button>
                         <button
                             onClick={handleSave}
-                            disabled={!adjusted || saving}
+                            disabled={!sendCount || saving}
                             className="btn-primary py-2 px-4 text-sm disabled:opacity-40"
                         >
                             {saving ? <Loader2 size={16} className="animate-spin" /> : null}
@@ -221,7 +289,7 @@ export default function ReframeEditor({ jobId, clipIndex, clipTitle, onClose, on
 // One scene. While it plays, the frame is replaced by the uncropped preview
 // seeked to this scene, so the rectangle can be judged against moving pictures
 // and sound rather than a single still.
-function SceneRow({ scene, value, widthFraction, previewUrl, touched, playing,
+function SceneRow({ scene, hasFace, value, widthFraction, previewUrl, touched, playing,
                     onPlayToggle, onMoveSingle, onMoveHalf, onToggleSplit, onReset }) {
     const boxRef = useRef(null);
     const videoRef = useRef(null);
@@ -310,6 +378,11 @@ function SceneRow({ scene, value, widthFraction, previewUrl, touched, playing,
                     <span className="readout text-muted truncate">
                         scene {scene.index + 1} · {fmt(scene.start)}–{fmt(scene.end)}
                     </span>
+                    {hasFace ? (
+                        <span className="text-[10px] text-brass lowercase shrink-0">face tracked</span>
+                    ) : (
+                        <span className="text-[10px] text-muted lowercase shrink-0">no face</span>
+                    )}
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
                     <button

@@ -6,6 +6,9 @@ from clipfac.review_api import router as review_router
 from clipfac.publishing import router as publishing_router
 from clipfac.vault import ProviderHeaders, apply_runtime, router as provider_router
 from clipfac.auth import InstallationAuth, credentials, router as auth_router
+from clipfac.scheduling import router as scheduling_router
+from clipfac.performance import router as performance_router
+from clipfac.editor_ops import router as editor_ops_router
 
 
 def install(app, namespace):
@@ -24,6 +27,9 @@ def install(app, namespace):
     app.include_router(review_router)
     app.include_router(provider_router)
     app.include_router(publishing_router)
+    app.include_router(scheduling_router)
+    app.include_router(performance_router)
+    app.include_router(editor_ops_router)
     app.add_middleware(ProviderHeaders)
     app.include_router(auth_router)
     app.add_middleware(InstallationAuth)

@@ -63,8 +63,37 @@ function formatDuration(clip) {
     return `${String(Math.floor(secs / 60)).padStart(2, '0')}:${String(secs % 60).padStart(2, '0')}`;
 }
 
+const VIRALITY_DIMENSIONS = [
+    ['hook_score', 'hook'], ['engagement_score', 'engagement'],
+    ['value_score', 'value'], ['shareability_score', 'shareability'],
+];
+
+// The performance loop records the four virality dimensions on the clip
+// record as clip.virality = {hook_score, engagement_score, value_score,
+// shareability_score (each 0–25), total_score (0–100), hook_type,
+// virality_reasoning}. Older/alternate shapes (virality_subscores, short
+// keys) are checked too; with none of them the thumbnail badge's single
+// predicted score stands alone.
+function viralitySubscoresFor(clip) {
+    if (!clip) return null;
+    const source = clip.virality_subscores || clip.sub_scores
+        || clip.virality_scores
+        || (clip.virality && typeof clip.virality === 'object' ? clip.virality : null);
+    if (!source) return null;
+    const rows = VIRALITY_DIMENSIONS
+        .map(([key, label]) => ({
+            key, label,
+            value: source[key] ?? source[key.replace('_score', '')],
+        }))
+        .filter((r) => Number.isFinite(r.value));
+    return rows.length ? rows : null;
+}
+
 export default function ResultCard({ clip, index, jobId, durable, uploadUserId, vaultKeys = {}, isManaged, onPlay, onPause, onBulkSubtitle, clipCount = 1, bulkProgress, initialState = null, onStateChange, connectedPlatforms = null, onConnectSocials, onEditClip = null, onReframeClip = null, onUpgrade = null }) {
     const [showModal, setShowModal] = useState(false);
+    // Virality sub-scores for this clip (null when the record only carries
+    // the single predicted score — see viralitySubscoresFor above).
+    const subscores = viralitySubscoresFor(clip);
     // The "why" line is clamped to two lines so cards in a row stay level;
     // when it overflows, a hover (desktop) or tap (touch) shows the whole
     // sentence in a popover that floats over the card instead of growing it.
@@ -905,6 +934,18 @@ export default function ResultCard({ clip, index, jobId, durable, uploadUserId, 
                         <span className="readout bg-paper3 px-2 py-0.5 rounded-full shrink-0">#shorts</span>
                         <span className="readout bg-paper3 px-2 py-0.5 rounded-full shrink-0">#viral</span>
                     </div>
+                    {/* Virality sub-scores: the four dimensions behind the
+                        single viral total. Only when the clip record carries
+                        them; otherwise the thumbnail badge's number stands. */}
+                    {subscores && (
+                        <div className="flex flex-wrap gap-1.5 mt-2" title="hook · engagement · value · shareability — each out of 25, total out of 100">
+                            {subscores.map(({ key, label, value }) => (
+                                <span key={key} className="readout bg-paper3 px-2 py-0.5 rounded-full shrink-0">
+                                    {label} <b className="text-ink">{value}/25</b>
+                                </span>
+                            ))}
+                        </div>
+                    )}
                 </div>
 
                 {/* Descriptions (compact) — full text lives in the modal */}

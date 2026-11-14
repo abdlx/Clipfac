@@ -55,6 +55,28 @@ ROUTES = {
     "get_clip_scenes": ("read", "GET", "/api/clip/{job_id}/{clip_index}/scenes", ClipRef,
                         "Read scene and framing metadata from the existing editor."),
 }
+
+# Phase 1 additions (merged clipping system): performance loop, scheduling,
+# editor ops. Each module owns its ROUTES dict / request models; the update
+# must stay before TOOL_SCOPES below, which is built from ROUTES.
+from clipfac.performance import MCP_ROUTES as _PERFORMANCE_ROUTES
+from clipfac.scheduling import SCHEDULING_ROUTES
+from clipfac.editor_ops import (
+    MergeClipsRequest, SplitRequest, StyleRequest, TrimRequest,
+)
+
+ROUTES.update(_PERFORMANCE_ROUTES)
+ROUTES.update(SCHEDULING_ROUTES)
+ROUTES.update({
+    "edit_clip_trim": ("edit", "POST", "/api/editor/trim", TrimRequest,
+                       "Trim a rendered clip file to a clip-relative start/end range, returning a new file. Deterministic ffmpeg cut; does not re-render from source or rewrite the clip recipe."),
+    "edit_clip_split": ("edit", "POST", "/api/editor/split", SplitRequest,
+                        "Split a rendered clip file into two files at a clip-relative time, returning both. Deterministic ffmpeg cut; does not re-render from source."),
+    "merge_clips": ("edit", "POST", "/api/editor/merge-clips", MergeClipsRequest,
+                    "Concatenate two or more rendered clip files into one new clip and append it to the job metadata. Stream-copies matching inputs, re-encodes mismatched ones."),
+    "apply_editor_style": ("edit", "POST", "/api/editor/style", StyleRequest,
+                           "Burn a caption template's karaoke captions and hook title onto a clip, starting from its clean base file. Records the template on the clip in metadata."),
+})
 TOOL_SCOPES = {name: definition[0] for name, definition in ROUTES.items()}
 
 

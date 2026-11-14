@@ -31,6 +31,85 @@ class ScoreResponse(BaseModel):
     windows: List[ScoredWindowModel]
 
 
+class ViralityModel(BaseModel):
+    """SupoClip's four-dimension virality breakdown, ported as a prompt +
+    schema change (the two selection brains differ, so no code was lifted).
+
+    Fields are deliberately unbounded here: a model that writes 30 for a
+    0-25 sub-score must not fail schema validation and lose the clip.
+    ``normalize_clip_virality`` clamps to 0-25 and recomputes the total.
+    """
+    hook_score: Optional[int] = None
+    engagement_score: Optional[int] = None
+    value_score: Optional[int] = None
+    shareability_score: Optional[int] = None
+    total_score: Optional[int] = None
+    hook_type: Optional[str] = None
+    virality_reasoning: str = ""
+
+
+# SupoClip's hook types, verbatim (backend/src/ai.py ViralityAnalysis).
+HOOK_TYPES = ("question", "statement", "statistic", "story", "contrast", "none")
+
+
+def _clamp_subscore(value) -> Optional[int]:
+    """Coerce to an int in 0-25; None when absent or not a number."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return max(0, min(25, int(value)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_total(value, fallback: int = 0) -> int:
+    if value is None or isinstance(value, bool):
+        return max(0, min(100, int(fallback)))
+    try:
+        return max(0, min(100, int(value)))
+    except (TypeError, ValueError):
+        return max(0, min(100, int(fallback)))
+
+
+def normalize_clip_virality(clip: dict) -> dict:
+    """Attach a validated ``virality`` object to a clip dict, in place.
+
+    - Sub-scores are clamped to 0-25; the total is RECOMPUTED as their sum
+      (the model's arithmetic is never trusted) and ``predicted_score`` is
+      set to that total, so the two stay equal.
+    - When sub-scores are absent (old results, a model that omitted them),
+      the sub-scores are null, the total is the existing ``predicted_score``,
+      and nothing crashes. ``virality`` is always present afterwards, so
+      the dashboard can read it unconditionally.
+    """
+    if not isinstance(clip, dict):
+        return clip
+    raw = clip.get("virality")
+    if not isinstance(raw, dict):
+        raw = {}
+    subscores = {name: _clamp_subscore(raw.get(name)) for name in (
+        "hook_score", "engagement_score", "value_score", "shareability_score")}
+    hook_type = raw.get("hook_type")
+    hook_type = str(hook_type).strip().lower() if isinstance(hook_type, str) else None
+    if hook_type not in HOOK_TYPES:
+        hook_type = None
+    reasoning = raw.get("virality_reasoning")
+    reasoning = str(reasoning)[:500] if isinstance(reasoning, str) else ""
+    if all(value is not None for value in subscores.values()):
+        total = sum(subscores.values())
+        clip["predicted_score"] = total
+    else:
+        subscores = {name: None for name in subscores}
+        total = _coerce_total(clip.get("predicted_score"))
+    clip["virality"] = {
+        **subscores,
+        "total_score": total,
+        "hook_type": hook_type,
+        "virality_reasoning": reasoning,
+    }
+    return clip
+
+
 class DetailClipModel(BaseModel):
     start: float
     end: float
@@ -44,6 +123,10 @@ class DetailClipModel(BaseModel):
     # the dashboard. Defaulted so a small local model that skips it does not
     # fail schema validation and lose the clip.
     why: str = ""
+    # Four-dimension virality breakdown (SupoClip's dimensions). Defaulted
+    # for the same reason: normalize_clip_virality fills it in afterwards,
+    # with null sub-scores when the model omitted them.
+    virality: Optional[ViralityModel] = None
 
 
 class DetailResponse(BaseModel):
@@ -353,15 +436,37 @@ COPY RULES — ALL text fields (descriptions, title, hook) MUST be written in TR
 - Descriptions (TikTok + Instagram): 1-2 punchy sentences that tease the payoff
   without spoiling it, then 3-5 topically relevant hashtags. No generic hashtag spam.
 - `video_title_for_youtube_short`: max 100 chars, curiosity-driven, no fake claims.
-- `predicted_score`: honest 0-100 estimate of viral potential.
+- `predicted_score`: honest 0-100 estimate of viral potential. It MUST equal
+  `virality.total_score` (the sum of the four sub-scores below).
 - `why`: one sentence, max 20 words, naming what makes THIS moment worth a
   clip — the specific hook, claim, number or payoff, not the topic.
+
+VIRALITY SCORING — every clip carries a `virality` object with four 0-25
+sub-scores, their sum as `total_score` (0-100), a `hook_type`, and one
+sentence of `virality_reasoning`. Score each dimension on its own merits:
+- `hook_score` (0-25): does the opening grab a cold viewer? 20-25 surprising
+  fact, bold claim or intriguing question; 15-19 good opener, creates
+  curiosity; 10-14 decent start; 0-9 weak or no hook.
+- `engagement_score` (0-25): does it hold attention? 20-25 highly
+  entertaining, emotional or dramatic; 15-19 interesting throughout; 10-14
+  moderately engaging; 0-9 flat or boring.
+- `value_score` (0-25): is it worth the viewer's time? 20-25 actionable
+  insights, unique knowledge or transformative ideas; 15-19 useful
+  information most people don't know; 10-14 somewhat informative; 0-9 common
+  knowledge or filler.
+- `shareability_score` (0-25): would a viewer send it on? 20-25 "I need to
+  send this to someone"; 15-19 worth bookmarking; 10-14 nice but not
+  share-worthy; 0-9 generic.
+- `hook_type`: one of question / statement / statistic / story / contrast /
+  none — the shape of the opening hook.
+- `virality_reasoning`: one sentence, citing what is actually in the clip,
+  saying why these four numbers are what they are.
 
 TRANSCRIPT_LANGUAGE: {language}
 VIDEO_DURATION_SECONDS: {video_duration}
 CANDIDATE_WINDOWS_JSON:
 {windows_json}
-
+{performance_feedback}
 Return only:
 {{
   "shorts": [
@@ -370,6 +475,15 @@ Return only:
       "end": <number>,
       "source_window_id": "<window id>",
       "predicted_score": <integer 0-100>,
+      "virality": {{
+        "hook_score": <integer 0-25>,
+        "engagement_score": <integer 0-25>,
+        "value_score": <integer 0-25>,
+        "shareability_score": <integer 0-25>,
+        "total_score": <integer 0-100, the sum of the four sub-scores>,
+        "hook_type": "<question | statement | statistic | story | contrast | none>",
+        "virality_reasoning": "<one sentence>"
+      }},
       "video_description_for_tiktok": "<description + hashtags>",
       "video_description_for_instagram": "<description + hashtags>",
       "video_title_for_youtube_short": "<title max 100 chars>",
@@ -622,6 +736,14 @@ def main() -> int:
         # placeholder for one: it ranks whatever it is given.
         fmt["min_clips"], fmt["max_clips"] = clip_count_targets(len(payload.get("windows") or []))
         fmt["min_secs"], fmt["max_secs"] = clip_duration_bounds()
+    # Performance loop: bias the detail pass toward what actually performed.
+    # The score template has no {performance_feedback} placeholder, so this
+    # is a no-op there. A failure here must never break selection.
+    try:
+        from clipfac.performance import feedback_text
+        fmt["performance_feedback"] = feedback_text()
+    except Exception:
+        fmt["performance_feedback"] = ""
     prompt = template.format(**fmt)
 
     _log(f"🤖 Gemini worker request: mode={args.mode} strategy={args.strategy} model={model_name} items={len(payload.get('windows', []))}")
@@ -639,6 +761,12 @@ def main() -> int:
         parsed = parsed_obj.model_dump() if hasattr(parsed_obj, "model_dump") else parsed_obj
     else:
         parsed = _parse_json_response_text(raw_text)
+    if args.mode == "detail":
+        # Clamp the virality sub-scores, recompute the total, and keep
+        # predicted_score equal to it. Old/model-omitted breakdowns fall
+        # back to null sub-scores with total = predicted_score.
+        for short in (parsed.get("shorts") or []):
+            normalize_clip_virality(short)
     result = {
         "mode": args.mode,
         "payload": parsed,

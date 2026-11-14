@@ -2753,11 +2753,19 @@ async def lifespan(app: FastAPI):
     if not BILLING_ENABLED:
         from clipfac.outbox import run as _run_outbox
         outbox_task = asyncio.create_task(_run_outbox())
+    schedule_task = None
+    if not BILLING_ENABLED:
+        from clipfac.scheduling import scheduler_loop as _run_schedule_loop
+        schedule_task = asyncio.create_task(_run_schedule_loop(app))
     yield
     if outbox_task:
         outbox_task.cancel()
         with suppress(asyncio.CancelledError):
             await outbox_task
+    if schedule_task:
+        schedule_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await schedule_task
     # Cleanup (optional: cancel worker)
 
 app = FastAPI(lifespan=lifespan)

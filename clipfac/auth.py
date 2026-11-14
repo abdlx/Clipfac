@@ -96,6 +96,12 @@ def required_scope(path, method, tool=None):
     if path.startswith(("/api/clip/", "/api/edit", "/api/subtitle", "/api/hook", "/api/translate",
                         "/api/render", "/api/effects")):
         return "edit"
+    if path.startswith("/api/clipfac/schedule"):
+        return "publish" if method in ("POST", "DELETE") else "read"
+    if path.startswith("/api/clipfac/performance"):
+        return "edit" if method == "POST" else "read"
+    if path.startswith("/api/editor/"):
+        return "edit" if method == "POST" else "read"
     return "admin"
 
 

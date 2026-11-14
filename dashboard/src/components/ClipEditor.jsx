@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useReducer, useRef, useCallback, useMemo, useDeferredValue } from 'react';
 import {
-    X, Loader2, Plus, Trash2, ChevronUp, ChevronDown, Scissors,
+    X, Loader2, Plus, Trash2, ChevronUp, ChevronDown, Scissors, Merge,
     AlertCircle, Undo2, Redo2, ChevronsRight, ChevronsLeft,
     PanelLeft, PanelLeftClose, Film,
 } from 'lucide-react';
 import { getApiUrl, withParam } from '../config';
 import { apiFetch, apiJson, QuotaError, openQuotaWall } from '../lib/api';
 import { useAuth } from '../contexts/AuthContext';
+import { mergeSegments, splitSegments } from './editorUtils';
 
 // Full-screen clip editor: shows WHICH source segments a clip was cut from,
 // lets the user trim/extend/split/reorder them (word-snapped), and re-renders
@@ -33,6 +34,45 @@ const SEGMENT_COLORS = [
     'oklch(74% .13 90)',
     'oklch(68% .13 250)',
 ];
+
+// CSS approximation of hooks.py HOOK_STYLES (mirrored in HookModal.jsx) for
+// the live hook preview on the program monitor. The server's burn may place
+// 'auto' differently — it keeps the hook off faces and captions — so this
+// previews the look, not the exact pixels.
+const HOOK_STYLE_PREVIEW = {
+    pill: { box: 'rgba(255,255,255,0.98)', text: '#000' },
+    classic: { box: 'rgba(255,255,255,0.94)', text: '#000' },
+    dark: { box: 'rgba(18,18,20,0.92)', text: '#fff' },
+    yellow: { box: 'rgba(255,214,0,0.96)', text: '#000' },
+    red: { box: 'rgba(220,38,38,0.96)', text: '#fff' },
+    outline: { box: 'transparent', text: '#fff', outline: true },
+    outline_yellow: { box: 'transparent', text: '#FFD600', outline: true },
+};
+const HOOK_POSITION_CLASS = {
+    auto: 'justify-start pt-[18%]',
+    top: 'justify-start pt-[18%]',
+    center: 'justify-center',
+    bottom: 'justify-end pb-[18%]',
+};
+
+// SupoClip caption templates (GET /api/editor/templates). The picker falls
+// back to this list when the endpoint is unreachable (older server), so the
+// editor never loses the template choice to a failed fetch.
+const TEMPLATE_FALLBACK = [
+    { id: 'default', name: 'Default', description: 'Punchy word-by-word captions with a pop highlight and emojis', font_family: 'THEBOLDFONT' },
+    { id: 'hormozi', name: 'Hormozi', description: 'Bold green highlight with a pill behind the active word', font_family: 'THEBOLDFONT' },
+    { id: 'mrbeast', name: 'MrBeast', description: 'Large yellow text with red pop highlights and emojis', font_family: 'THEBOLDFONT' },
+    { id: 'minimal', name: 'Minimal', description: 'Clean, subtle captions with a soft background', font_family: 'TikTokSans-Regular' },
+    { id: 'tiktok', name: 'TikTok', description: 'TikTok-style with pink pop highlights', font_family: 'TikTokSans-Bold' },
+    { id: 'neon', name: 'Neon', description: 'Glowing neon text with magenta highlights', font_family: 'THEBOLDFONT' },
+    { id: 'podcast', name: 'Podcast', description: 'Professional podcast-style captions', font_family: 'TikTokSans-Regular' },
+];
+
+// @font-face for the SupoClip template fonts, so the hook preview uses the
+// same face the burn will. Files live in dashboard/public/fonts/.
+const TEMPLATE_FONT_FACE = "@font-face{font-family:'THEBOLDFONT';src:url('/fonts/THEBOLDFONT.ttf') format('truetype');font-weight:400;}"
+    + "@font-face{font-family:'TikTokSans';src:url('/fonts/TikTokSans-Bold.ttf') format('truetype');font-weight:700;}"
+    + "@font-face{font-family:'TikTokSans';src:url('/fonts/TikTokSans-Regular.ttf') format('truetype');font-weight:400;}";
 
 function fmt(t) {
     if (!Number.isFinite(t)) return '–:––';
@@ -103,7 +143,40 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
     const { segments, selected } = state;
 
     const [snapToWords, setSnapToWords] = useState(true);
-    const [reapplyCaptions, setReapplyCaptions] = useState(true);
+    // Captions toggle (Phase 1 spec): word-synced captions burned on
+    // re-render. Initialised from the EDL's has_captions — the clip as it
+    // stands — not forced on: turning it off re-renders without captions
+    // (rerender sends reapply_captions=false, which burns none).
+    const [captionsOn, setCaptionsOn] = useState(true);
+    const [renderedCaptions, setRenderedCaptions] = useState(true);
+    // Hook title overlay (Phase 1 spec): text + style/position, previewed
+    // live as a CSS overlay on the program monitor and burned by
+    // POST /api/hook as part of the export. The EDL carries no burned-hook
+    // state, so renderedHook starts empty: typing a hook replaces any
+    // burned one server-side; removing a burned hook still needs the
+    // ResultCard hook modal, which knows what the clip carries.
+    const [hookText, setHookText] = useState('');
+    const [hookStyle, setHookStyle] = useState('pill');
+    const [hookPosition, setHookPosition] = useState('auto');
+    const [renderedHook, setRenderedHook] = useState(null);
+    // Caption template (Phase 1 + SupoClip port): 'clipfac' is the native
+    // Clipfac caption look (rerender burns it); any other id is a SupoClip
+    // template, burned after the recut by POST /api/editor/style. The
+    // chosen template travels with the export — it is part of dirty state.
+    const [templates, setTemplates] = useState([]);
+    const [template, setTemplate] = useState('clipfac');
+    const [renderedTemplate, setRenderedTemplate] = useState('clipfac');
+
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const data = await apiJson('/api/editor/templates');
+                if (!cancelled && Array.isArray(data.templates)) setTemplates(data.templates);
+            } catch { /* picker falls back to TEMPLATE_FALLBACK */ }
+        })();
+        return () => { cancelled = true; };
+    }, []);
     // Framing override: 'auto' (classifier) | 'full' (whole frame) | 'track'.
     const [framing, setFraming] = useState('auto');
     const [renderedFraming, setRenderedFraming] = useState('auto');
@@ -190,7 +263,8 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                 setRenderedSegments(data.segments.map((s) => ({ ...s })));
                 setFraming(data.framing || 'auto');
                 setRenderedFraming(data.framing || 'auto');
-                setReapplyCaptions(true);
+                setCaptionsOn(data.has_captions ?? true);
+                setRenderedCaptions(data.has_captions ?? true);
                 setPreviewUrl(getApiUrl(`/videos/${jobId}/${data.current_file}`));
             } catch (e) {
                 if (!cancelled) setLoadError(e.detail || e.message || 'could not load the clip recipe');
@@ -212,11 +286,28 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
     const sourceOpen = sourceAvailable && showSource;
 
     const total = totalOf(segments);
+    const segmentsChanged = useMemo(() => {
+        if (!renderedSegments) return false;
+        return JSON.stringify(segments) !== JSON.stringify(renderedSegments);
+    }, [segments, renderedSegments]);
+    // Hook dirt is text-only: style/position without text burn nothing.
+    const hookDirty = hookText.trim() !== (renderedHook?.text || '');
+    const templateSelected = template !== 'clipfac';
+    const templateChanged = template !== renderedTemplate;
+    const captionsChanged = captionsOn !== renderedCaptions;
+    // A captions change needs a recut only on the native path; with a
+    // SupoClip template the style burn (re)does the captions itself.
+    const needsRecut = segmentsChanged || framing !== renderedFraming
+        || (!templateSelected && captionsChanged);
+    // Style-only change: no recut needed — the template burn (or /api/hook
+    // on the native path) works straight on the current file.
+    const styleOnly = !needsRecut
+        && (hookDirty || (templateSelected && (templateChanged || captionsChanged)));
     const dirty = useMemo(() => {
         if (!renderedSegments) return false;
-        return JSON.stringify(segments) !== JSON.stringify(renderedSegments)
-            || framing !== renderedFraming;
-    }, [segments, renderedSegments, framing, renderedFraming]);
+        return segmentsChanged || framing !== renderedFraming
+            || captionsChanged || hookDirty || templateChanged;
+    }, [segmentsChanged, renderedSegments, framing, renderedFraming, captionsChanged, hookDirty, templateChanged]);
 
     // Trim bounds: with the source gone, cuts must stay inside the range the
     // canonical file was rendered from.
@@ -306,9 +397,19 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
         }
         at = snapEdge(at, 'end');
         if (at - seg.start < minSeg || seg.end - at < minSeg) at = seg.start + (seg.end - seg.start) / 2;
-        const next = segments.flatMap((s, i) => (i === index
-            ? [{ start: s.start, end: Math.round(at * 1000) / 1000 }, { start: Math.round(at * 1000) / 1000, end: s.end }]
-            : [s]));
+        const next = splitSegments(segments, index, at, minSeg);
+        if (!next) return;
+        dispatch({ type: 'commit', segments: next, select: index });
+    };
+
+    // Merge the selected segment with the next one into a single continuous
+    // source range (M key, or the merge button on the segment row). The
+    // merged segment spans any source gap between the two, so the clip gets
+    // longer by exactly that gap — the same thing a merge means in an NLE.
+    // Undoable like every other edit: it goes through 'commit'.
+    const mergeSegment = (index) => {
+        const next = mergeSegments(segments, index);
+        if (!next) return;
         dispatch({ type: 'commit', segments: next, select: index });
     };
 
@@ -786,6 +887,20 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
     };
 
     // ---- keyboard -----------------------------------------------------------
+    // Step the playhead along the clip timeline (←/→ 1s, Shift 5s), keeping
+    // the rendered file and the source monitor in sync like a track scrub.
+    const nudgePlayhead = (delta) => {
+        const t = clampToCovered(
+            Math.max(0, Math.min(total, playhead + delta)), playhead, { path: true });
+        setPlayhead(t);
+        const r = clipToRendered(t);
+        playSpanRef.current = spanIndexAt(t);
+        if (r !== null && videoRef.current) {
+            try { videoRef.current.currentTime = r; } catch { /* not seekable yet */ }
+        }
+        if (sourceOpen) seekSource(clipToSource(t));
+    };
+
     useEffect(() => {
         const onKey = (e) => {
             const tag = (e.target?.tagName || '').toLowerCase();
@@ -813,6 +928,18 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
             } else if (e.key.toLowerCase() === 's') {
                 e.preventDefault();
                 splitSegment(selected);
+            } else if (e.key.toLowerCase() === 'm') {
+                e.preventDefault();
+                mergeSegment(selected);
+            } else if (e.key.toLowerCase() === 'c') {
+                e.preventDefault();
+                setCaptionsOn((v) => !v);
+            } else if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                nudgePlayhead(e.shiftKey ? -5 : -1);
+            } else if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                nudgePlayhead(e.shiftKey ? 5 : 1);
             } else if (sourceOpen && e.key.toLowerCase() === 'i') {
                 e.preventDefault();
                 markHere('in');
@@ -839,11 +966,98 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
         return () => clearInterval(t);
     }, [rendering]);
 
+    // Burn the hook title onto the clip's current file (POST /api/hook).
+    // The server strips any previously burned hook first, so applying a new
+    // one replaces rather than stacks. Returns the new video URL.
+    const applyHook = async () => {
+        const removing = !hookText.trim() && renderedHook;
+        const res = await apiFetch('/api/hook', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(removing
+                ? { job_id: jobId, clip_index: clipIndex, remove: true }
+                : {
+                    job_id: jobId, clip_index: clipIndex,
+                    text: hookText.trim(), style: hookStyle,
+                    position: hookPosition,
+                }),
+        });
+        if (!res.ok) {
+            let detail = `hook failed (HTTP ${res.status})`;
+            try { detail = (await res.json()).detail || detail; } catch { /* keep fallback */ }
+            throw new Error(detail);
+        }
+        const data = await res.json();
+        setRenderedHook(removing ? null : (data.burned_hook || { text: hookText.trim() }));
+        return data.new_video_url;
+    };
+
+    // Burn the SupoClip template (+ optional hook title) onto the clip's
+    // current file via POST /api/editor/style: one burn does the word-synced
+    // karaoke captions in the template's styling and the hook title card.
+    // With captions off and no hook text there is nothing to burn, so the
+    // clip is pointed back at its clean file instead.
+    const applyTemplateStyle = async () => {
+        if (!captionsOn && !hookText.trim()) {
+            const res = await apiFetch('/api/subtitle/remove', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ job_id: jobId, clip_index: clipIndex }),
+            });
+            if (!res.ok) {
+                let detail = `remove captions failed (HTTP ${res.status})`;
+                try { detail = (await res.json()).detail || detail; } catch { /* keep fallback */ }
+                throw new Error(detail);
+            }
+            const data = await res.json();
+            setRenderedTemplate(template);
+            setRenderedCaptions(false);
+            setRenderedHook(null);
+            return data.new_video_url;
+        }
+        const res = await apiFetch('/api/editor/style', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                job_id: jobId,
+                clip_index: clipIndex,
+                template,
+                hook_title: hookText.trim() || null,
+                include_captions: captionsOn,
+            }),
+        });
+        if (!res.ok) {
+            let detail = `template burn failed (HTTP ${res.status})`;
+            try { detail = (await res.json()).detail || detail; } catch { /* keep fallback */ }
+            throw new Error(detail);
+        }
+        const data = await res.json();
+        setRenderedTemplate(template);
+        setRenderedCaptions(captionsOn);
+        setRenderedHook(hookText.trim() ? { text: hookText.trim() } : null);
+        return data.new_video_url;
+    };
+
+    // Style-only application: template burns go through /api/editor/style,
+    // a native hook through /api/hook.
+    const applyStyle = async () => (templateSelected
+        ? applyTemplateStyle()
+        : applyHook());
+
     const doRender = async () => {
         if (!canRender) return;
         setRendering(true);
         setRenderError(null);
         try {
+            // Style-only change: no recut needed, the style burns straight
+            // onto the current file.
+            if (styleOnly) {
+                const url = await applyStyle();
+                setPreviewUrl(withParam(getApiUrl(url), 't', Date.now()));
+                onRerendered?.(clipIndex, { new_video_url: url });
+                refreshMe();
+                return;
+            }
             const res = await apiFetch('/api/clip/rerender', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -852,7 +1066,10 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                     clip_index: clipIndex,
                     segments: segments.map((s) => ({ start: s.start, end: s.end })),
                     snap_to_words: false, // boundaries are already word-snapped client-side
-                    reapply_captions: reapplyCaptions,
+                    // With a SupoClip template the style burn (below) does
+                    // the captions, so the recut stays clean; otherwise the
+                    // recut burns the native captions itself.
+                    reapply_captions: templateSelected ? false : captionsOn,
                     framing,
                 }),
             });
@@ -865,8 +1082,16 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
             setRenderedSegments(data.recipe.segments.map((s) => ({ ...s })));
             setRenderedFraming(data.framing || 'auto');
             setFraming(data.framing || 'auto');
+            if (!templateSelected) setRenderedCaptions(captionsOn);
             dispatch({ type: 'init', segments: data.recipe.segments.map((s) => ({ ...s })) });
-            setPreviewUrl(withParam(getApiUrl(data.new_video_url), 't', Date.now()));
+            let preview = data.new_video_url;
+            // The style/hook burns onto the freshly rendered file (its
+            // video_url is already the new file in metadata, so both
+            // endpoints pick it up).
+            if (templateSelected || hookDirty) {
+                preview = await applyStyle();
+            }
+            setPreviewUrl(withParam(getApiUrl(preview), 't', Date.now()));
             onRerendered?.(clipIndex, data);
             refreshMe();
         } catch (e) {
@@ -989,6 +1214,13 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
     // The source track lives under the source monitor. With no source at all
     // there is no monitor to sit under, so it moves below the clip track: it
     // still explains why trims are pinned to the original range.
+    const templateList = templates.length ? templates : TEMPLATE_FALLBACK;
+    const selectedTemplate = templateList.find((t) => t.id === template);
+    // Hook preview in the template's own face (the burn uses the same font).
+    const previewFontFamily = templateSelected && selectedTemplate?.font_family === 'THEBOLDFONT'
+        ? "'THEBOLDFONT', sans-serif"
+        : templateSelected && selectedTemplate?.font_family?.startsWith('TikTokSans')
+            ? "'TikTokSans', sans-serif" : undefined;
     const sourceTrack = (
         <div className="shrink-0 select-none">
             <div className="flex items-center justify-between mb-1.5 gap-3">
@@ -1093,6 +1325,7 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
 
     return (
         <div className="fixed inset-0 z-[110] bg-paper flex flex-col animate-fade">
+            <style>{TEMPLATE_FONT_FACE}</style>
             {/* header */}
             <div className="px-4 sm:px-6 pt-4 pb-3 border-b border-rule flex items-start justify-between gap-4 shrink-0">
                 <div className="min-w-0">
@@ -1309,7 +1542,7 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                         )}
                     </div>
                     <div className="flex-1 min-h-0 flex items-center justify-center">
-                        <div className="h-full max-h-full aspect-[9/16] bg-black rounded-card border border-rule overflow-hidden">
+                        <div className="relative h-full max-h-full aspect-[9/16] bg-black rounded-card border border-rule overflow-hidden">
                             <video
                                 ref={videoRef}
                                 src={previewUrl}
@@ -1321,6 +1554,25 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                                 onPlay={onClipPlay}
                                 onPause={stopPlayLoop}
                             />
+                            {/* Hook title overlay preview: live as you type.
+                                CSS only — the server burn (hooks.py) may place
+                                'auto' differently to clear faces/captions. */}
+                            {hookText.trim() && (
+                                <div className={`absolute inset-0 pointer-events-none flex items-center px-3 ${HOOK_POSITION_CLASS[hookPosition] || HOOK_POSITION_CLASS.auto}`}>
+                                    <span
+                                        className="text-center font-extrabold leading-snug px-2.5 py-1 rounded-full text-[15px] max-w-full break-words"
+                                        style={{
+                                            background: (HOOK_STYLE_PREVIEW[hookStyle] || HOOK_STYLE_PREVIEW.pill).box,
+                                            color: (HOOK_STYLE_PREVIEW[hookStyle] || HOOK_STYLE_PREVIEW.pill).text,
+                                            fontFamily: previewFontFamily,
+                                            textShadow: (HOOK_STYLE_PREVIEW[hookStyle] || HOOK_STYLE_PREVIEW.pill).outline
+                                                ? '0 1px 2px rgba(0,0,0,0.9), 0 0 4px rgba(0,0,0,0.9)' : undefined,
+                                        }}
+                                    >
+                                        {hookText.trim()}
+                                    </span>
+                                </div>
+                            )}
                         </div>
                     </div>
 
@@ -1446,6 +1698,7 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                                             <button className="p-1 rounded-input text-muted hover:text-ink hover:bg-paper disabled:opacity-45" disabled={i === 0} onClick={(e) => { e.stopPropagation(); moveSegment(i, -1); }} aria-label="move up"><ChevronUp size={13} /></button>
                                             <button className="p-1 rounded-input text-muted hover:text-ink hover:bg-paper disabled:opacity-45" disabled={i === segments.length - 1} onClick={(e) => { e.stopPropagation(); moveSegment(i, 1); }} aria-label="move down"><ChevronDown size={13} /></button>
                                             <button className="p-1 rounded-input text-muted hover:text-ink hover:bg-paper disabled:opacity-45" disabled={seg.end - seg.start < minSeg * 2 || segments.length >= limits.max_segments} onClick={(e) => { e.stopPropagation(); splitSegment(i); }} aria-label="split segment"><Scissors size={13} /></button>
+                                            <button className="p-1 rounded-input text-muted hover:text-ink hover:bg-paper disabled:opacity-45" disabled={i === segments.length - 1} onClick={(e) => { e.stopPropagation(); mergeSegment(i); }} aria-label="merge with next segment" title="merge with the next segment (M)"><Merge size={13} /></button>
                                             <button className="p-1 rounded-input text-muted hover:text-danger hover:bg-paper disabled:opacity-45 ml-auto" disabled={segments.length <= 1} onClick={(e) => { e.stopPropagation(); deleteSegment(i); }} aria-label="delete segment"><Trash2 size={13} /></button>
                                         </div>
                                         {outOfRange(seg) && (
@@ -1507,6 +1760,70 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                             )}
                         </div>
 
+                        {/* hook title overlay */}
+                        <div>
+                            <p className="eyebrow mb-2">Hook title</p>
+                            <input
+                                type="text"
+                                value={hookText}
+                                maxLength={160}
+                                onChange={(e) => setHookText(e.target.value)}
+                                placeholder="POV: …"
+                                className="input-field w-full text-sm"
+                                aria-label="hook title text"
+                            />
+                            <div className="grid grid-cols-2 gap-1.5 mt-1.5">
+                                <select
+                                    value={hookStyle}
+                                    onChange={(e) => setHookStyle(e.target.value)}
+                                    className="input-field text-xs py-1.5"
+                                    aria-label="hook style"
+                                >
+                                    {['pill', 'classic', 'dark', 'yellow', 'red', 'outline', 'outline_yellow'].map((s) => (
+                                        <option key={s} value={s}>{s.replace('_', ' ')}</option>
+                                    ))}
+                                </select>
+                                <select
+                                    value={hookPosition}
+                                    onChange={(e) => setHookPosition(e.target.value)}
+                                    className="input-field text-xs py-1.5"
+                                    aria-label="hook position"
+                                >
+                                    {['auto', 'top', 'center', 'bottom'].map((p) => (
+                                        <option key={p} value={p}>{p}</option>
+                                    ))}
+                                </select>
+                            </div>
+                            <p className="text-[11px] text-muted mt-1.5 leading-relaxed">
+                                previewed on the video above; burned on export.
+                                {hookText.trim() ? '' : ' replaces any burned hook.'}
+                            </p>
+                        </div>
+
+                        {/* caption template (SupoClip port) */}
+                        <div>
+                            <p className="eyebrow mb-2">Caption template</p>
+                            <select
+                                value={template}
+                                onChange={(e) => setTemplate(e.target.value)}
+                                className="input-field w-full text-sm"
+                                aria-label="caption template"
+                            >
+                                <option value="clipfac">Clipfac native</option>
+                                {templateList.map((t) => (
+                                    <option key={t.id} value={t.id} title={t.description}>
+                                        {t.name} — {t.description}
+                                    </option>
+                                ))}
+                            </select>
+                            {templateSelected && (
+                                <p className="text-[11px] text-muted mt-1.5 leading-relaxed">
+                                    SupoClip template — word-synced karaoke captions
+                                    in this look, burned on export with the hook above.
+                                </p>
+                            )}
+                        </div>
+
                         {/* toggles */}
                         <div className="space-y-2.5">
                             <label className="flex items-center justify-between cursor-pointer">
@@ -1517,12 +1834,17 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                                 </span>
                             </label>
                             <label className="flex items-center justify-between cursor-pointer">
-                                <span className="text-xs lowercase text-ink2">re-apply captions after recut</span>
+                                <span className="text-xs lowercase text-ink2">captions · word-synced (c)</span>
                                 <span className="relative inline-flex items-center">
-                                    <input type="checkbox" checked={reapplyCaptions} onChange={(e) => setReapplyCaptions(e.target.checked)} className="sr-only peer" />
+                                    <input type="checkbox" checked={captionsOn} onChange={(e) => setCaptionsOn(e.target.checked)} className="sr-only peer" />
                                     <span className="w-8 h-4 rounded-full bg-paper3 peer-checked:bg-brass transition-colors after:content-[''] after:absolute after:left-0.5 after:top-0.5 after:w-3 after:h-3 after:rounded-full after:bg-ink after:transition-transform peer-checked:after:translate-x-4" />
                                 </span>
                             </label>
+                            {captionsOn !== renderedCaptions && (
+                                <p className="text-[11px] text-muted leading-relaxed">
+                                    captions {captionsOn ? 'will be burned' : 'will be left off'} on re-render
+                                </p>
+                            )}
                         </div>
 
                         {/* keyboard legend — moved off the clip track, which no longer
@@ -1530,7 +1852,8 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                         <div>
                             <p className="eyebrow mb-2">Shortcuts</p>
                             <p className="readout leading-relaxed">
-                                SPACE PLAY · S SPLIT · ⌫ DELETE · ⌘Z UNDO
+                                SPACE PLAY · S SPLIT · M MERGE · C CAPTIONS · ⌫ DELETE · ⌘Z UNDO
+                                · ←/→ SEEK 1S (⇧ 5S)
                                 {sourceOpen && ' · I MARK IN · O MARK OUT · , INSERT · . REPLACE'}
                             </p>
                         </div>
@@ -1558,7 +1881,7 @@ export default function ClipEditor({ jobId, clipIndex, clipTitle, onClose, onRer
                             <button className="btn-primary flex-1 flex items-center justify-center gap-2" disabled={!canRender || !dirty} onClick={doRender}>
                                 {rendering
                                     ? (<><Loader2 size={16} className="animate-spin text-brassink" /> re-rendering… {renderSeconds}s</>)
-                                    : (needsSourcePath ? 're-render from source' : 're-render clip')}
+                                    : (styleOnly ? (templateSelected ? 'apply template' : 'apply hook') : needsSourcePath ? 're-render from source' : 're-render clip')}
                             </button>
                         </div>
                         {rendering && (
