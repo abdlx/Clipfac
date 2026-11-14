@@ -116,6 +116,13 @@ RUN pip install --upgrade --pre --no-cache-dir "yt-dlp[default]" bgutil-ytdlp-po
 # Copy application code
 COPY . .
 
+# Phase 1 binary assets (YuNet face model + caption fonts) cannot be committed
+# — the deploy tooling only carries UTF-8 text. Fetch the exact files from
+# their public sources and verify SHA-256; the fetch is local-file-first, so
+# a future commit that does carry them is left alone. Runs before the
+# fontconfig step below so the fetched fonts get registered with libass.
+RUN sh scripts/fetch-phase1-assets.sh backend
+
 # Every ffmpeg the app starts goes through bin/ffmpeg, which caps its decoder
 # and filter threads (docs/architecture/jobs-and-deploys.md). Uncapped, each
 # one sized its pools to the whole machine; at 2 the same encode used less

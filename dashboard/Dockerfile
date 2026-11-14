@@ -17,6 +17,12 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
 COPY . .
+# Phase 1 caption fonts (THEBOLDFONT / TikTokSans) cannot be committed — the
+# deploy tooling only carries UTF-8 text. Fetch the exact files from their
+# public sources and verify SHA-256 (local-file-first, so a future commit
+# that does carry them is left alone). Runs before `npm run build` so Vite
+# copies public/fonts/ into dist/.
+RUN sh scripts/fetch-phase1-assets.sh frontend
 # Vite bakes env at BUILD time. Set VITE_API_URL to the backend's public URL
 # (Coolify: add it as a build variable on the frontend service). Empty = same-origin.
 ARG VITE_API_URL=""

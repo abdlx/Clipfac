@@ -61,3 +61,14 @@ data/
 # Private real-media benchmark inputs/results
 benchmark-manifest.local.json
 benchmark-results*.json
+
+# Phase 1 binary assets (fetched at Docker build time by
+# scripts/fetch-phase1-assets.sh; the deploy tooling only carries UTF-8 text,
+# so these can never be committed through it)
+clipfac/models/face_detection_yunet_2023mar.onnx
+fonts/THEBOLDFONT.ttf
+fonts/TikTokSans-Bold.ttf
+fonts/TikTokSans-Regular.ttf
+dashboard/public/fonts/THEBOLDFONT.ttf
+dashboard/public/fonts/TikTokSans-Bold.ttf
+dashboard/public/fonts/TikTokSans-Regular.ttf
