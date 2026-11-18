@@ -35,16 +35,20 @@ class ViralityModel(BaseModel):
     """SupoClip's four-dimension virality breakdown, ported as a prompt +
     schema change (the two selection brains differ, so no code was lifted).
 
-    Fields are deliberately unbounded here: a model that writes 30 for a
-    0-25 sub-score must not fail schema validation and lose the clip.
-    ``normalize_clip_virality`` clamps to 0-25 and recomputes the total.
+    The four sub-scores, the total and the hook type are REQUIRED: the
+    schema is the contract the structured-output API enforces, and when
+    they were optional the small model simply omitted them — every clip
+    came back with null sub-scores. Fields stay unbounded here: a model
+    that writes 30 for a 0-25 sub-score must not fail schema validation
+    and lose the clip. ``normalize_clip_virality`` clamps to 0-25 and
+    recomputes the total. Only the prose reasoning keeps a default.
     """
-    hook_score: Optional[int] = None
-    engagement_score: Optional[int] = None
-    value_score: Optional[int] = None
-    shareability_score: Optional[int] = None
-    total_score: Optional[int] = None
-    hook_type: Optional[str] = None
+    hook_score: int
+    engagement_score: int
+    value_score: int
+    shareability_score: int
+    total_score: int
+    hook_type: str
     virality_reasoning: str = ""
 
 
@@ -123,10 +127,13 @@ class DetailClipModel(BaseModel):
     # the dashboard. Defaulted so a small local model that skips it does not
     # fail schema validation and lose the clip.
     why: str = ""
-    # Four-dimension virality breakdown (SupoClip's dimensions). Defaulted
-    # for the same reason: normalize_clip_virality fills it in afterwards,
-    # with null sub-scores when the model omitted them.
-    virality: Optional[ViralityModel] = None
+    # Four-dimension virality breakdown (SupoClip's dimensions). Required:
+    # the structured-output schema enforces it, so the model cannot omit
+    # the scores the way it did when they were optional (null sub-scores on
+    # every clip). normalize_clip_virality still fills the object in
+    # afterwards for old results and raw-JSON fallbacks, with null
+    # sub-scores when the model omitted them.
+    virality: ViralityModel
 
 
 class DetailResponse(BaseModel):
@@ -443,7 +450,9 @@ COPY RULES — ALL text fields (descriptions, title, hook) MUST be written in TR
 
 VIRALITY SCORING — every clip carries a `virality` object with four 0-25
 sub-scores, their sum as `total_score` (0-100), a `hook_type`, and one
-sentence of `virality_reasoning`. Score each dimension on its own merits:
+sentence of `virality_reasoning`. The four sub-scores are REQUIRED for
+every clip — never omit the `virality` object or any of its fields; a clip
+without them is unusable. Score each dimension on its own merits:
 - `hook_score` (0-25): does the opening grab a cold viewer? 20-25 surprising
   fact, bold claim or intriguing question; 15-19 good opener, creates
   curiosity; 10-14 decent start; 0-9 weak or no hook.

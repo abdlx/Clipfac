@@ -7,6 +7,7 @@ trip, and the stored clip record carrying the breakdown.
 import json
 
 import pytest
+from pydantic import ValidationError
 
 import gemini_worker
 from gemini_worker import (
@@ -160,11 +161,20 @@ def test_detail_response_round_trip_with_and_without_virality():
     normalized = normalize_clip_virality(dumped["shorts"][0])
     assert normalized["predicted_score"] == normalized["virality"]["total_score"] == 81
 
-    # A small model omitting virality entirely still validates.
-    without = DetailResponse.model_validate({"shorts": [_clip()]})
-    assert without.shorts[0].virality is None
-    dumped = without.model_dump()
-    assert normalize_clip_virality(dumped["shorts"][0])["virality"]["total_score"] == 88
+    # The four sub-scores are REQUIRED now: when they were optional the
+    # small model omitted the whole object and every clip came back with
+    # null sub-scores. Omitting virality, or any sub-score inside it, is a
+    # schema error — the structured-output API enforces it before the
+    # response reaches us, and the raw-JSON fallback in the caller still
+    # saves a clip whose model skipped the object (normalize nulls it).
+    with pytest.raises(ValidationError):
+        DetailResponse.model_validate({"shorts": [_clip()]})
+    with pytest.raises(ValidationError):
+        DetailResponse.model_validate({"shorts": [_clip(virality={
+            "hook_score": 20, "engagement_score": 22, "value_score": 18,
+            "total_score": 60, "hook_type": "statistic",
+            "virality_reasoning": "Missing shareability.",
+        })]})
 
 
 def test_detail_clip_model_rejects_nothing_for_out_of_range_subscore():

@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 
 router = APIRouter()
@@ -47,6 +48,16 @@ def principal(request):
         for candidate, scopes in credentials():
             if hmac.compare_digest(token, candidate):
                 return identity(candidate), scopes, False
+        # Dashboard-created agent tokens (clipfac/agent_tokens.py): only the
+        # hash is stored, so verify by hashing the presented value. A DB
+        # problem must never break auth — it just means no DB token matches.
+        try:
+            from clipfac.agent_tokens import verify_token
+            db_token = verify_token(token)
+            if db_token:
+                return db_token["owner"], db_token["scopes"], False
+        except Exception:
+            pass
         return None
     cookie = request.cookies.get(COOKIE, "")
     try:
@@ -78,6 +89,11 @@ def required_scope(path, method, tool=None):
                "add_subtitles": "edit", "recut_clip": "edit", "publish_clip": "publish",
                "get_job_status": "read", "list_clips": "read", "get_quota": "read"}
         return TOOL_SCOPES.get(tool, old.get(tool, "admin"))
+    # Agent-token management is installation-admin only, for every method:
+    # a read-scoped agent token must never be able to list (let alone mint
+    # or revoke) other tokens. This must stay before the GET -> read rule.
+    if path.startswith("/api/clipfac/agent-tokens"):
+        return "admin"
     if method in ("GET", "HEAD", "OPTIONS"):
         return "read"
     if path in ("/api/clipfac/inspect", "/api/clipfac/brief", "/api/clipfac/reviews"):
@@ -201,3 +217,38 @@ async def logout():
     response = JSONResponse({"authenticated": False})
     response.delete_cookie(COOKIE, path="/")
     return response
+
+
+# --- Agent tokens (MCP / agent access) -------------------------------------
+# Installation-admin only: InstallationAuth maps every method on this path
+# to the admin scope (see required_scope), so an agent token can never mint,
+# list or revoke other tokens. The plaintext value is returned exactly once,
+# at creation — it is never stored and never returned again.
+
+class _CreateTokenRequest(BaseModel):
+    name: str = ""
+    scopes: list = []
+
+
+@router.post("/api/clipfac/agent-tokens")
+async def create_agent_token(body: _CreateTokenRequest):
+    from clipfac import agent_tokens
+    try:
+        record = agent_tokens.create_token(body.name, body.scopes)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return record
+
+
+@router.get("/api/clipfac/agent-tokens")
+async def list_agent_tokens():
+    from clipfac import agent_tokens
+    return {"tokens": agent_tokens.list_tokens()}
+
+
+@router.delete("/api/clipfac/agent-tokens/{token_id}")
+async def revoke_agent_token(token_id: str):
+    from clipfac import agent_tokens
+    if not agent_tokens.revoke_token(token_id):
+        raise HTTPException(404, "Token not found or already revoked")
+    return {"revoked": True, "id": token_id}
