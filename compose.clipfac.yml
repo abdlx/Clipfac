@@ -15,6 +15,13 @@ services:
       FFMPEG_THREADS: "2"
       WHISPER_DEVICE: cpu
       WHISPER_COMPUTE: int8
+      # PO tokens come from the bgutil HTTP server the image's entrypoint
+      # runs in this same container (loopback only, port 4416). Do not
+      # point BGUTIL_SCRIPT_PATH at the one-shot Node script: every yt-dlp
+      # call cold-starts node and loads jsdom + youtubei.js, which takes
+      # >15 s here and trips the getpot plugin's hardcoded 15 s check.
+      BGUTIL_BASE_URL: "http://127.0.0.1:4416"
+      BGUTIL_SCRIPT_PATH: ""
     volumes:
       - clipfac-output:/app/output
       - clipfac-uploads:/app/uploads

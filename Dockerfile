@@ -88,13 +88,20 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
 # Deno JS runtime — required by yt-dlp for some extractor challenges.
 COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
 
-# Helper token provider, baked in as a local Node script (no separate service).
+# Helper token provider, baked in as a local Node server (long-lived HTTP
+# service, started by the entrypoint). As a one-shot script
+# (BGUTIL_SCRIPT_PATH) every yt-dlp call cold-started node and loaded jsdom
+# + youtubei.js, which takes >15 s on this host and trips the getpot
+# plugin's hardcoded 15 s version check, so downloads died before fetching
+# anything. As a warm HTTP server the modules load once at boot and yt-dlp
+# mints tokens over HTTP (BGUTIL_BASE_URL), so there is no per-call cold
+# start. The server binds loopback only; only this container talks to it.
 RUN git clone --depth 1 https://github.com/Brainicism/bgutil-ytdlp-pot-provider /opt/bgutil-provider \
     && cd /opt/bgutil-provider/server \
     && npm install --no-audit --no-fund \
     && npx tsc \
     && npm cache clean --force
-ENV BGUTIL_SCRIPT_PATH=/opt/bgutil-provider/server/build/generate_once.js
+ENV BGUTIL_BASE_URL=http://127.0.0.1:4416
 
 # Copy virtual env from builder
 COPY --from=builder /opt/venv /opt/venv
@@ -115,6 +122,10 @@ RUN pip install --upgrade --pre --no-cache-dir "yt-dlp[default]" bgutil-ytdlp-po
 
 # Copy application code
 COPY . .
+
+# The entrypoint runs the bgutil token server; make it executable in-image
+# (the deploy tooling does not preserve file modes from the repo).
+RUN chmod +x /app/bin/clipfac-entrypoint.sh
 
 # Phase 1 binary assets (YuNet face model + caption fonts) cannot be committed
 # — the deploy tooling only carries UTF-8 text. Fetch the exact files from
@@ -175,5 +186,9 @@ EXPOSE 8000
 # reports unhealthy forever and every deploy rolls back (2026-08-25).
 HEALTHCHECK --interval=5s --timeout=3s --start-period=30s --retries=2 \
   CMD curl -sf http://127.0.0.1:8000/health/ready > /dev/null || exit 1
+
+# Entrypoint starts the bgutil token HTTP server, waits for it, then runs
+# the API as PID 1. The CMD below is passed through as its arguments.
+ENTRYPOINT ["/app/bin/clipfac-entrypoint.sh"]
 
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*", "--timeout-graceful-shutdown", "15"]
