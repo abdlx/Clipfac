@@ -117,6 +117,17 @@ class InstallationAuth(BaseHTTPMiddleware):
         protected = path.startswith(("/api/", "/videos/", "/thumbnails/", "/mcp", "/gallery", "/video/"))
         if not enabled() or not protected or path in ("/api/config", "/api/clipfac/session"):
             return await call_next(request)
+        # Self-host (no billing): /videos and /thumbnails are open. A <video>
+        # tag or <a download> link cannot send the Authorization header, and
+        # the session cookie does not cross the split origin (frontend and
+        # API on different hosts), so requiring a token here makes every
+        # media preview and download fail with 401. The mounts' own
+        # authorize hook already allows self-host (no secret -> open); the
+        # middleware must not block it first. The API itself stays
+        # token-gated, and media files live under unguessable job UUIDs.
+        billing = os.environ.get("BILLING_ENABLED", "").lower() in ("1", "true", "yes")
+        if not billing and path.startswith(("/videos/", "/thumbnails/")):
+            return await call_next(request)
         user = principal(request)
         if not user:
             return JSONResponse({"detail": "Installation token required"}, status_code=401, headers=_cors_headers(request))
