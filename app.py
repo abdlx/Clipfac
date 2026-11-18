@@ -4203,6 +4203,63 @@ async def process_endpoint(
 
     _enqueue_job(job_id, priority)
 
+    # Persistence: record every direct job in the productions ledger so
+    # Projects lists ALL runs, not just ones started from Projects. Clipfac
+    # flows (productions / analyses / plans) already reserve their own
+    # ledger row before calling /api/process; recording again would
+    # duplicate them, so only direct Clips-generator calls (no clipfac_*
+    # fields) get a row here. The row keys the job by "job:<id>" and stores
+    # the job_id in its response, so opening it in Projects fetches the
+    # live job (status + clips) from /api/status. A ledger failure must
+    # never break submission: the job is queued and the dashboard session
+    # still shows it.
+    try:
+        from urllib.parse import urlparse as _urlparse
+        from clipfac import store as _ledger
+        from clipfac.auth import request_owner as _request_owner
+        _is_clipfac_flow = bool(
+            initial_body.get("clipfac_style")
+            or initial_body.get("clipfac_analysis_only")
+            or initial_body.get("clipfac_plan_id")
+        )
+        if not _is_clipfac_flow:
+            _owner = _request_owner(request)
+            _src_url = (url or "").strip()
+            _up_id = (upload_id or "").strip()
+            _parsed = _urlparse(_src_url) if _src_url else None
+            _valid_url = bool(_parsed and _parsed.scheme in ("http", "https") and _parsed.hostname and not _parsed.username and not _parsed.password)
+            if (_valid_url and not _up_id) or (_up_id and not _src_url):
+                # A URL / upload source validates as a ProductionRequest, so
+                # the Projects detail view builds the clips grid for it.
+                _eff_min = min_secs if min_secs is not None else 15
+                _eff_max = max_secs if max_secs is not None else 60
+                if _eff_max < _eff_min + 5:
+                    _eff_max = min(_eff_min + 5, 180)
+                if _eff_min > 175:
+                    _eff_min = 175
+                _ledger_req = {
+                    "source_url": _src_url,
+                    "upload_id": _up_id,
+                    "confirm_rights": True,
+                    "style": "podcast",
+                    "max_clips": n_clips or 15,
+                    "min_seconds": _eff_min,
+                    "max_seconds": _eff_max,
+                    "minimum_score": 70,
+                    "force_low_quality": force_low,
+                    "captions": str(captions).lower() in ("1", "true", "yes") if captions is not None else True,
+                }
+            else:
+                # File upload / thumbnail session / unparsable URL: no source
+                # that validates, so mark it as a raw process run. It still
+                # lists in Projects and its job (logs, download-all) stays
+                # reachable through the stored job_id.
+                _ledger_req = {"operation": "process", "source_url": "", "upload_id": ""}
+            _record, _created = _ledger.reserve(_owner, "job:" + job_id, _ledger_req, {})
+            _ledger.finish(_record["id"], "queued", {"job_id": job_id, "status": "queued"})
+    except Exception as _ledger_error:
+        print(f"[ledger] could not record direct job {job_id}: {_ledger_error}")
+
     return {"job_id": job_id, "status": "queued", "partial": partial,
             "first_video": bool(getattr(request.state, "first_video", False))}
 
