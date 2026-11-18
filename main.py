@@ -36,6 +36,7 @@ import hook_grounding
 import layout_picker
 import llm_backend
 import twitch_signals
+from clipfac import chat_peaks as chat_peaks_module
 from clip_selection import (build_transcript_windows, clip_count_targets,
                             clip_duration_bounds, dedupe_overlapping,
                             score_batches, shortlist_target,
@@ -2123,7 +2124,7 @@ def score_batch_size():
     return 3 if llm_backend.active() else 8
 
 
-def get_viral_clips(transcript_result, video_duration, viewer_clips=None):
+def get_viral_clips(transcript_result, video_duration, viewer_clips=None, chat_peaks=None):
     """Two-pass clip selection: score transcript windows, then detail the best.
 
     Windowing gives even coverage on long videos (a single call over the whole
@@ -2134,6 +2135,11 @@ def get_viral_clips(transcript_result, video_duration, viewer_clips=None):
     ``viewer_clips`` (``twitch_signals.viewer_clips_for_job``): stretches the
     stream's own viewers clipped. They are shown to both passes on the windows
     that hold them, and the hottest windows are guaranteed a shortlist slot.
+
+    ``chat_peaks`` (``clipfac.chat_peaks.chat_peaks_for_job``): moments the
+    stream's chat reacted to (Twitch chat replay, YouTube live chat). Merged
+    into the same heat as viewer clips, so a window chat went wild in gets
+    the same promotion, and the peak labels are shown to both passes.
     """
     language = str(transcript_result.get('language') or 'unknown')
     if llm_backend.active():
@@ -2183,8 +2189,23 @@ def get_viral_clips(transcript_result, video_duration, viewer_clips=None):
         # than ~30 min. See clip_selection.score_batches.
         target = shortlist_target(video_duration)
         heat = twitch_signals.window_heat(windows, viewer_clips) if viewer_clips else {}
+        if chat_peaks:
+            # Merge chat-peak heat into the same map the viewer clips use, so
+            # one promotion path covers both signals. A window chat went wild
+            # in is as hot as one viewers clipped.
+            chat_heat = chat_peaks_module.window_heat(windows, chat_peaks)
+            for wid, ch in chat_heat.items():
+                h = heat.setdefault(wid, {"clips": 0, "views": 0, "spans": []})
+                h["clips"] += ch["clips"]
+                h["views"] += ch["views"]
+                h["spans"].extend(ch["spans"])
+                if ch.get("labels"):
+                    h.setdefault("chat_labels", []).extend(ch["labels"])
+            heat = {wid: h for wid, h in heat.items()}
+            for h in heat.values():
+                h["spans"].sort()
         if heat:
-            print(f"   👀 Viewer clips fall in {len(heat)} window(s).")
+            print(f"   👀 Viewer clips / chat peaks fall in {len(heat)} window(s).")
 
         def _payload(ws):
             out = []
@@ -2195,6 +2216,8 @@ def get_viral_clips(transcript_result, video_duration, viewer_clips=None):
                     item["viewers_clipped"] = h["clips"]
                     item["viewer_clip_views"] = h["views"]
                     item["viewer_moments"] = h["spans"][:5]
+                    if h.get("chat_labels"):
+                        item["chat_peaks"] = sorted(set(h["chat_labels"]))
                 out.append(item)
             return out
 
@@ -2221,7 +2244,7 @@ def get_viral_clips(transcript_result, video_duration, viewer_clips=None):
             shortlist = twitch_signals.promote_hot_windows(shortlist, ranked, heat, target)
             added = [w["id"] for w in shortlist if w["id"] not in before]
             if added:
-                print(f"   👀 Promoted {len(added)} window(s) viewers clipped: {added}")
+                print(f"   👀 Promoted {len(added)} window(s) viewers clipped / chat peaked: {added}")
         print(f"   Shortlisted {len(shortlist)} window(s) for detail.")
 
         # --- Pass 2: detailed clip extraction on the shortlist ---
@@ -2415,6 +2438,26 @@ def _viewer_hint(viewer_clips, offset, duration):
             "but still judge what you see and keep the time contract.\n")
 
 
+def _chat_hint(chat_peaks, offset, duration):
+    """Prompt lines naming where the stream's chat peaked inside
+    [offset, offset+duration], in that file's own seconds, or "" when there
+    is nothing to say. Chat reacts after the moment, so each peak is already
+    dated before it."""
+    inside = [p for p in chat_peaks or []
+              if offset <= float(p.get("peak", (p["start"] + p["end"]) / 2)) < offset + duration]
+    if not inside:
+        return ""
+    inside = sorted(inside, key=lambda p: -float(p.get("score") or 0))[:15]
+    spans = [[round(float(p.get("peak", 0)) - offset, 1),
+              str(p.get("label") or ""),
+              str(p.get("said") or "")] for p in inside]
+    return ("\nCHAT_PEAKS (moments the stream's chat reacted to, as "
+            "[peak_second, reaction, top_words] in seconds of THIS video): "
+            + json.dumps(spans) +
+            "\nTreat them as strong evidence a moment lands and cover the best of them, "
+            "but still judge what you see and keep the time contract.\n")
+
+
 def _visual_pass(client, model_name, video_path, duration, language,
                  min_clips, max_clips, min_secs, max_secs, hint=""):
     """One vision call over one file. Returns ``(shorts, cost)``; ``shorts``
@@ -2464,7 +2507,7 @@ def _visual_pass(client, model_name, video_path, duration, language,
                 pass
 
 
-def get_visual_clips(video_path, video_duration, language="en", viewer_clips=None):
+def get_visual_clips(video_path, video_duration, language="en", viewer_clips=None, chat_peaks=None):
     """Clip a SILENT video by vision: Gemini watches the footage and picks the
     most engaging visual moments (no transcript). Returns the same
     {"shorts", "cost_analysis"} shape as get_viral_clips, or None.
@@ -2504,7 +2547,8 @@ def get_visual_clips(video_path, video_duration, language="en", viewer_clips=Non
             clean, cost = _visual_pass(client, model_name, video_path, video_duration,
                                        language, v_min_clips, v_max_clips,
                                        v_min_secs, v_max_secs,
-                                       hint=_viewer_hint(viewer_clips, 0.0, float(video_duration)))
+                                       hint=_viewer_hint(viewer_clips, 0.0, float(video_duration))
+                                       + _chat_hint(chat_peaks, 0.0, float(video_duration)))
             if clean is None:
                 return None  # Provider failure is not an editorial empty result.
             costs = [cost]
@@ -2528,7 +2572,8 @@ def get_visual_clips(video_path, video_duration, language="en", viewer_clips=Non
                         shorts, cost = _visual_pass(
                             client, model_name, proxy, round(s1 - s0, 3), language,
                             per_min, v_max_clips, v_min_secs, v_max_secs,
-                            hint=_viewer_hint(viewer_clips, s0, s1 - s0))
+                            hint=_viewer_hint(viewer_clips, s0, s1 - s0)
+                            + _chat_hint(chat_peaks, s0, s1 - s0))
                     except gemini_worker.GeminiBlockedError:
                         raise
                     except Exception as e:
@@ -2627,6 +2672,13 @@ if __name__ == '__main__':
     if args.url and not args.skip_analysis:
         viewer_clips = twitch_signals.viewer_clips_for_job(args.url, 0)
 
+    # What the stream's chat reacted to (Twitch chat replay + YouTube live
+    # chat; Kick has no post-stream chat). Same timing as viewer clips, so
+    # the early pick gets it too. Best effort: [] on any failure.
+    chat_peak_list = []
+    if args.url and not args.skip_analysis:
+        chat_peak_list = chat_peaks_module.chat_peaks_for_job(args.url, 0)
+
     # 1. Get Input Video
     if args.url:
         # For multi-clip runs, treat --output as an OUTPUT DIRECTORY (create it if needed).
@@ -2658,7 +2710,8 @@ if __name__ == '__main__':
                 early["transcript"] = t
                 if audio_duration and not speech_is_sparse(t, audio_duration):
                     early["clips"] = get_viral_clips(t, audio_duration,
-                                                     viewer_clips=viewer_clips)
+                                                     viewer_clips=viewer_clips,
+                                                     chat_peaks=chat_peak_list)
             except Exception as e:
                 print(f"   ℹ️ Early transcription skipped ({type(e).__name__}: {e}).")
                 early["transcript"] = early["clips"] = None
@@ -2848,9 +2901,11 @@ if __name__ == '__main__':
             print("♻️ Using the clips Gemini picked while the video downloaded.")
             clips_data = early_clips
         elif transcript is not None:
-            clips_data = get_viral_clips(transcript, duration, viewer_clips=viewer_clips)
+            clips_data = get_viral_clips(transcript, duration, viewer_clips=viewer_clips,
+                                         chat_peaks=chat_peak_list)
         else:
-            clips_data = get_visual_clips(input_video, duration, viewer_clips=viewer_clips)
+            clips_data = get_visual_clips(input_video, duration, viewer_clips=viewer_clips,
+                                          chat_peaks=chat_peak_list)
 
         if not clips_data or 'shorts' not in clips_data or (
                 not clips_data['shorts'] and os.environ.get('CLIPFAC_ANALYSIS_ONLY') != '1'):
